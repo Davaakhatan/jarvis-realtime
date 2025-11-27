@@ -266,20 +266,39 @@
     const modeLabel = document.getElementById('modeLabel');
     const wakeIndicator = document.getElementById('wakeIndicator');
 
+    let reconnectAttempts = 0;
+    const MAX_RECONNECT_DELAY = 30000;
+
     function connect() {
       ws = new WebSocket(WS_URL);
 
       ws.onopen = () => {
+        reconnectAttempts = 0;
         statusDot.classList.add('connected');
         statusText.textContent = 'Connected';
-        stateLabel.textContent = 'Press to speak';
+        stateLabel.textContent = alwaysListening ? 'Say "Jarvis" to activate...' : 'Press to speak';
+
+        // Resume always-listening if it was enabled
+        if (alwaysListening) {
+          startPassiveListening();
+        }
       };
 
       ws.onclose = () => {
         statusDot.classList.remove('connected');
         statusText.textContent = 'Disconnected';
-        stateLabel.textContent = 'Reconnecting...';
-        setTimeout(connect, 3000);
+
+        // Stop any ongoing recording/playback
+        cleanupRecording();
+        stopPlayback();
+        stopPassiveListening();
+
+        // Exponential backoff with max delay
+        reconnectAttempts++;
+        const delay = Math.min(1000 * Math.pow(2, reconnectAttempts - 1), MAX_RECONNECT_DELAY);
+        stateLabel.textContent = `Reconnecting in ${Math.round(delay/1000)}s...`;
+
+        setTimeout(connect, delay);
       };
 
       ws.onerror = (error) => {
@@ -320,8 +339,15 @@
 
         case 'tts.start':
           voiceBtn.className = 'voice-button speaking';
-          stateLabel.textContent = 'Speaking...';
+          stateLabel.textContent = 'Speaking... (speak to interrupt)';
           interruptBtn.classList.add('visible');
+          audioChunksReceived = 0; // Reset chunk counter
+          isTTSSpeaking = true;
+          // Start listening for voice interrupt after a short delay
+          // to avoid the user's last words from triggering interrupt
+          setTimeout(() => {
+            if (isTTSSpeaking) startInterruptVAD();
+          }, 500);
           break;
 
         case 'tts.chunk':
@@ -333,16 +359,31 @@
 
         case 'tts.end':
           interruptBtn.classList.remove('visible');
-          if (alwaysListening) {
-            startPassiveListening();
-          } else {
-            voiceBtn.className = 'voice-button';
-            stateLabel.textContent = 'Press to speak';
+          // Flush any remaining buffered audio
+          if (audioQueue.length > 0 && !isPlaying) {
+            playNextChunk();
           }
+          // Wait for audio to finish before resuming listening
+          const checkAudioDone = () => {
+            if (audioQueue.length === 0 && !isPlaying) {
+              isTTSSpeaking = false;
+              stopInterruptVAD();
+              if (alwaysListening) {
+                startPassiveListening();
+              } else {
+                voiceBtn.className = 'voice-button';
+                stateLabel.textContent = 'Press to speak';
+              }
+            } else {
+              setTimeout(checkAudioDone, 100);
+            }
+          };
+          checkAudioDone();
           break;
 
         case 'session.interrupt':
           interruptBtn.classList.remove('visible');
+          stopPlayback(); // Stop any playing audio
           if (alwaysListening) {
             startPassiveListening();
           } else {
@@ -505,9 +546,208 @@
       // Don't restart passive listening here - wait for tts.end event
     }
 
-    function playAudio(base64Audio) {
-      // TODO: Implement audio playback from base64/buffer
-      console.log('Audio chunk received');
+    // Audio playback system for TTS
+    let playbackContext = null;
+    let audioQueue = [];
+    let isPlaying = false;
+    let audioChunksReceived = 0;
+    let nextPlayTime = 0; // For seamless scheduling
+    const TTS_SAMPLE_RATE = 24000; // OpenAI TTS default for PCM
+    const MIN_BUFFER_CHUNKS = 3; // Buffer more chunks before starting playback
+
+    // Voice interrupt during TTS playback
+    let interruptVadContext = null;
+    let interruptVadStream = null;
+    let interruptVadAnalyser = null;
+    let isTTSSpeaking = false;
+    const INTERRUPT_THRESHOLD = 45; // Higher threshold to avoid TTS audio triggering it
+    const INTERRUPT_CONSECUTIVE_FRAMES = 5; // Need sustained speech to interrupt
+    let consecutiveSpeechFrames = 0;
+
+    async function initPlaybackContext() {
+      if (!playbackContext || playbackContext.state === 'closed') {
+        playbackContext = new AudioContext({ sampleRate: TTS_SAMPLE_RATE });
+      }
+      if (playbackContext.state === 'suspended') {
+        await playbackContext.resume();
+      }
+      return playbackContext;
+    }
+
+    function playAudio(audioData) {
+      // audioData comes as { type: 'Buffer', data: [...] } from JSON-stringified Buffer
+      if (!audioData || !audioData.data) {
+        console.warn('Invalid audio data received');
+        return;
+      }
+
+      // Convert byte array to Uint8Array, then create Int16Array view
+      // This properly handles signed 16-bit PCM little-endian data
+      const byteArray = new Uint8Array(audioData.data);
+      const dataView = new DataView(byteArray.buffer);
+      const int16Array = new Int16Array(byteArray.length / 2);
+
+      for (let i = 0; i < int16Array.length; i++) {
+        // getInt16 with littleEndian=true properly handles signed values
+        int16Array[i] = dataView.getInt16(i * 2, true);
+      }
+
+      // Queue the audio chunk
+      audioQueue.push(int16Array);
+      audioChunksReceived++;
+
+      // Log first chunk for debugging
+      if (audioChunksReceived === 1) {
+        console.log('First audio chunk received:', {
+          byteLength: byteArray.length,
+          samples: int16Array.length,
+          duration: (int16Array.length / TTS_SAMPLE_RATE * 1000).toFixed(0) + 'ms',
+          firstSamples: Array.from(int16Array.slice(0, 10))
+        });
+      }
+
+      // Start playback after buffering enough chunks
+      if (!isPlaying && audioQueue.length >= MIN_BUFFER_CHUNKS) {
+        playNextChunk();
+      }
+    }
+
+    async function playNextChunk() {
+      if (audioQueue.length === 0) {
+        isPlaying = false;
+        nextPlayTime = 0;
+        return;
+      }
+
+      isPlaying = true;
+      const ctx = await initPlaybackContext();
+      const int16Data = audioQueue.shift();
+
+      // Convert Int16 to Float32 for Web Audio API
+      const float32Data = new Float32Array(int16Data.length);
+      for (let i = 0; i < int16Data.length; i++) {
+        float32Data[i] = int16Data[i] / 32768;
+      }
+
+      // Create audio buffer
+      const audioBuffer = ctx.createBuffer(1, float32Data.length, TTS_SAMPLE_RATE);
+      audioBuffer.getChannelData(0).set(float32Data);
+
+      // Create and play source directly to destination
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+
+      // Schedule seamlessly using precise timing
+      const currentTime = ctx.currentTime;
+      const startTime = nextPlayTime > currentTime ? nextPlayTime : currentTime;
+
+      source.onended = () => {
+        playNextChunk();
+      };
+
+      source.start(startTime);
+      nextPlayTime = startTime + audioBuffer.duration;
+    }
+
+    function stopPlayback() {
+      audioQueue = [];
+      isPlaying = false;
+      nextPlayTime = 0;
+      isTTSSpeaking = false;
+      stopInterruptVAD();
+      if (playbackContext && playbackContext.state !== 'closed') {
+        playbackContext.close();
+        playbackContext = null;
+      }
+    }
+
+    // Start listening for voice interrupt during TTS playback
+    async function startInterruptVAD() {
+      if (interruptVadStream) return; // Already running
+
+      try {
+        interruptVadStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true }
+        });
+
+        interruptVadContext = new AudioContext();
+        const source = interruptVadContext.createMediaStreamSource(interruptVadStream);
+        interruptVadAnalyser = interruptVadContext.createAnalyser();
+        interruptVadAnalyser.fftSize = 512;
+        interruptVadAnalyser.smoothingTimeConstant = 0.3;
+        source.connect(interruptVadAnalyser);
+
+        consecutiveSpeechFrames = 0;
+        monitorInterruptVAD();
+        console.log('Voice interrupt VAD started');
+      } catch (err) {
+        console.warn('Could not start interrupt VAD:', err);
+      }
+    }
+
+    function stopInterruptVAD() {
+      if (interruptVadContext) {
+        interruptVadContext.close();
+        interruptVadContext = null;
+      }
+      if (interruptVadStream) {
+        interruptVadStream.getTracks().forEach(track => track.stop());
+        interruptVadStream = null;
+      }
+      interruptVadAnalyser = null;
+      consecutiveSpeechFrames = 0;
+    }
+
+    function monitorInterruptVAD() {
+      if (!interruptVadAnalyser || !isTTSSpeaking) return;
+
+      const dataArray = new Uint8Array(interruptVadAnalyser.frequencyBinCount);
+      interruptVadAnalyser.getByteFrequencyData(dataArray);
+      const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+
+      if (average > INTERRUPT_THRESHOLD) {
+        consecutiveSpeechFrames++;
+        if (consecutiveSpeechFrames >= INTERRUPT_CONSECUTIVE_FRAMES) {
+          // User is speaking! Interrupt the assistant
+          console.log('Voice interrupt detected! Stopping TTS...');
+          onVoiceInterrupt();
+          return;
+        }
+      } else {
+        consecutiveSpeechFrames = 0;
+      }
+
+      if (isTTSSpeaking) {
+        requestAnimationFrame(monitorInterruptVAD);
+      }
+    }
+
+    async function onVoiceInterrupt() {
+      // Stop TTS playback
+      stopPlayback();
+
+      // Send interrupt to server
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'interrupt' }));
+      }
+
+      // Show feedback
+      wakeIndicator.textContent = '🛑 Interrupted! Listening...';
+      wakeIndicator.classList.add('visible');
+      clearTimeout(wakeWordTimeout);
+      wakeWordTimeout = setTimeout(() => {
+        wakeIndicator.classList.remove('visible');
+      }, 1500);
+
+      // Start recording for the new question
+      await startRecording();
+      speechStartTime = Date.now();
+
+      // Start silence detection for auto-stop (if in always-listening mode)
+      if (alwaysListening) {
+        startSilenceDetection();
+      }
     }
 
     voiceBtn.addEventListener('mousedown', () => {
@@ -529,6 +769,7 @@
     });
 
     interruptBtn.addEventListener('click', () => {
+      stopPlayback(); // Stop audio immediately on client
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'interrupt' }));
       }
@@ -551,27 +792,150 @@
       }
     });
 
-    // Voice Activity Detection (VAD) - works offline
+    // Wake Word Detection using Web Speech API
+    let wakeWordRecognition = null;
+    let speechRecognitionFailed = false; // Track if we should use VAD instead
     let vadContext = null;
     let vadStream = null;
     let vadAnalyser = null;
-    let silenceTimeout = null;
     let speechStartTime = null;
     let lastTriggerTime = 0;
-    const SILENCE_THRESHOLD = 30; // Audio level threshold (higher = less sensitive)
-    const SILENCE_DURATION = 1500; // ms of silence before stopping
-    const MIN_SPEECH_DURATION = 500; // ms minimum to count as speech
-    const TRIGGER_COOLDOWN = 3000; // ms cooldown between triggers
+    const WAKE_WORDS = ['jarvis', 'hey jarvis', 'okay jarvis', 'yo jarvis'];
+    const SILENCE_THRESHOLD = 30;
+    const SILENCE_DURATION = 1500;
+    const MIN_SPEECH_DURATION = 500;
+    const TRIGGER_COOLDOWN = 3000;
 
-    function startPassiveListening() {
-      // Stop any existing VAD
-      stopPassiveListening();
+    function initWakeWordDetection() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        console.warn('Speech recognition not supported, falling back to VAD');
+        return null;
+      }
+
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onresult = (event) => {
+        const last = event.results.length - 1;
+        const transcript = event.results[last][0].transcript.toLowerCase().trim();
+
+        // Check for wake word
+        const hasWakeWord = WAKE_WORDS.some(wake => transcript.includes(wake));
+
+        if (hasWakeWord && !isRecording) {
+          // Extract command after wake word (if any)
+          let command = transcript;
+          for (const wake of WAKE_WORDS) {
+            command = command.replace(wake, '').trim();
+          }
+
+          onWakeWordDetected(command);
+        }
+      };
+
+      recognition.onerror = (event) => {
+        if (event.error === 'network' || event.error === 'service-not-allowed' || event.error === 'not-allowed') {
+          // Web Speech API not available, fall back to VAD permanently
+          console.warn('Speech recognition unavailable, using VAD mode instead');
+          speechRecognitionFailed = true;
+          wakeWordRecognition = null;
+          if (alwaysListening && !isRecording) {
+            startVADListening();
+          }
+          return;
+        }
+        if (event.error !== 'no-speech' && event.error !== 'aborted') {
+          console.warn('Speech recognition error:', event.error);
+        }
+        // Restart if still in always-listening mode
+        if (alwaysListening && !isRecording && !speechRecognitionFailed) {
+          setTimeout(() => {
+            if (alwaysListening && !isRecording) {
+              startWakeWordListening();
+            }
+          }, 500);
+        }
+      };
+
+      recognition.onend = () => {
+        // Restart if still in always-listening mode
+        if (alwaysListening && !isRecording) {
+          setTimeout(() => {
+            if (alwaysListening && !isRecording) {
+              startWakeWordListening();
+            }
+          }, 100);
+        }
+      };
+
+      return recognition;
+    }
+
+    function startWakeWordListening() {
+      // If speech recognition failed before, go straight to VAD
+      if (speechRecognitionFailed) {
+        startVADListening();
+        return;
+      }
+
+      if (!wakeWordRecognition) {
+        wakeWordRecognition = initWakeWordDetection();
+      }
+
+      if (wakeWordRecognition) {
+        try {
+          wakeWordRecognition.start();
+          voiceBtn.className = 'voice-button listening-passive';
+          stateLabel.textContent = 'Say "Jarvis" to activate...';
+        } catch (e) {
+          // Already started, ignore
+        }
+      } else {
+        // Fallback to VAD
+        startVADListening();
+      }
+    }
+
+    function stopWakeWordListening() {
+      if (wakeWordRecognition) {
+        try {
+          wakeWordRecognition.stop();
+        } catch (e) {
+          // Not started, ignore
+        }
+      }
+      stopVADListening();
+    }
+
+    async function onWakeWordDetected(immediateCommand = '') {
+      // Show indicator
+      wakeIndicator.textContent = '🎯 "Jarvis" detected!';
+      wakeIndicator.classList.add('visible');
+      clearTimeout(wakeWordTimeout);
+      wakeWordTimeout = setTimeout(() => {
+        wakeIndicator.classList.remove('visible');
+      }, 2000);
+
+      // Stop wake word listening
+      stopWakeWordListening();
+
+      // Start recording
+      await startRecording();
+      speechStartTime = Date.now();
+
+      // Start silence detection for auto-stop
+      startSilenceDetection();
+    }
+
+    // Fallback VAD for browsers without Speech Recognition
+    function startVADListening() {
+      stopVADListening();
 
       navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true
-        }
+        audio: { echoCancellation: true, noiseSuppression: true }
       }).then(stream => {
         vadStream = stream;
         vadContext = new AudioContext();
@@ -583,8 +947,6 @@
 
         voiceBtn.className = 'voice-button listening-passive';
         stateLabel.textContent = 'Listening... (speak to activate)';
-
-        // Start monitoring audio levels
         monitorAudioLevel();
       }).catch(err => {
         console.error('Failed to start VAD:', err);
@@ -595,39 +957,7 @@
       });
     }
 
-    function monitorAudioLevel() {
-      if (!vadAnalyser || !alwaysListening) return;
-
-      const dataArray = new Uint8Array(vadAnalyser.frequencyBinCount);
-      vadAnalyser.getByteFrequencyData(dataArray);
-
-      // Calculate average audio level
-      const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
-
-      const now = Date.now();
-      if (average > SILENCE_THRESHOLD && !isRecording && (now - lastTriggerTime) > TRIGGER_COOLDOWN) {
-        // Speech detected - start recording
-        lastTriggerTime = now;
-        onSpeechDetected();
-      }
-
-      // Continue monitoring if still in always-listening mode and not recording
-      if (alwaysListening && !isRecording) {
-        requestAnimationFrame(monitorAudioLevel);
-      }
-    }
-
-    async function onSpeechDetected() {
-      // Show indicator
-      wakeIndicator.textContent = '🎙️ Voice detected!';
-      wakeIndicator.classList.add('visible');
-      clearTimeout(wakeWordTimeout);
-      wakeWordTimeout = setTimeout(() => {
-        wakeIndicator.classList.remove('visible');
-        wakeIndicator.textContent = '🎯 Wake word detected!';
-      }, 1500);
-
-      // Stop VAD temporarily
+    function stopVADListening() {
       if (vadContext) {
         vadContext.close();
         vadContext = null;
@@ -636,13 +966,52 @@
         vadStream.getTracks().forEach(track => track.stop());
         vadStream = null;
       }
+      vadAnalyser = null;
+    }
 
-      // Start active recording and wait for it to be ready
+    function monitorAudioLevel() {
+      if (!vadAnalyser || !alwaysListening) return;
+
+      const dataArray = new Uint8Array(vadAnalyser.frequencyBinCount);
+      vadAnalyser.getByteFrequencyData(dataArray);
+      const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+
+      const now = Date.now();
+      if (average > SILENCE_THRESHOLD && !isRecording && (now - lastTriggerTime) > TRIGGER_COOLDOWN) {
+        lastTriggerTime = now;
+        onVADSpeechDetected();
+      }
+
+      if (alwaysListening && !isRecording) {
+        requestAnimationFrame(monitorAudioLevel);
+      }
+    }
+
+    async function onVADSpeechDetected() {
+      wakeIndicator.textContent = '🎙️ Voice detected!';
+      wakeIndicator.classList.add('visible');
+      clearTimeout(wakeWordTimeout);
+      wakeWordTimeout = setTimeout(() => {
+        wakeIndicator.classList.remove('visible');
+      }, 1500);
+
+      stopVADListening();
       await startRecording();
       speechStartTime = Date.now();
-
-      // Start silence detection for auto-stop (now recordingAnalyser is ready)
       startSilenceDetection();
+    }
+
+    function startPassiveListening() {
+      stopPassiveListening();
+      startWakeWordListening();
+    }
+
+    function stopPassiveListening() {
+      stopWakeWordListening();
+      if (!isRecording) {
+        voiceBtn.className = 'voice-button';
+        stateLabel.textContent = 'Press to speak';
+      }
     }
 
     function startSilenceDetection() {
@@ -681,23 +1050,6 @@
 
       // Start silence checking after a short delay
       setTimeout(checkSilence, 500);
-    }
-
-    function stopPassiveListening() {
-      if (vadContext) {
-        vadContext.close();
-        vadContext = null;
-      }
-      if (vadStream) {
-        vadStream.getTracks().forEach(track => track.stop());
-        vadStream = null;
-      }
-      vadAnalyser = null;
-
-      if (!isRecording) {
-        voiceBtn.className = 'voice-button';
-        stateLabel.textContent = 'Press to speak';
-      }
     }
 
     // Toggle handler

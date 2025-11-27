@@ -21,8 +21,8 @@ export class TTSService extends EventEmitter {
   constructor(config: TTSConfig) {
     super();
     this.config = {
-      model: 'tts-1',
-      voice: 'alloy',
+      model: 'tts-1-hd', // HD model for higher quality audio
+      voice: 'nova', // Nova - warm female voice
       speed: 1.0,
       ...config,
     };
@@ -72,6 +72,10 @@ export class TTSService extends EventEmitter {
   ): Promise<void> {
     logger.debug({ textLength: text.length }, 'Starting streaming synthesis');
 
+    // Buffer size: ~200ms of audio at 24kHz 16-bit mono = 24000 * 2 * 0.2 = 9600 bytes
+    // Larger chunks = smoother playback with less noise from chunk boundaries
+    const MIN_CHUNK_SIZE = 9600;
+
     try {
       const response = await fetch('https://api.openai.com/v1/audio/speech', {
         method: 'POST',
@@ -98,10 +102,28 @@ export class TTSService extends EventEmitter {
         throw new Error('No response body');
       }
 
+      // Buffer to accumulate small chunks
+      let buffer = Buffer.alloc(0);
+
       while (true) {
         const { done, value } = await reader.read();
-        if (done) break;
-        onChunk(Buffer.from(value));
+
+        if (done) {
+          // Send any remaining buffered data
+          if (buffer.length > 0) {
+            onChunk(buffer);
+          }
+          break;
+        }
+
+        // Accumulate data in buffer
+        buffer = Buffer.concat([buffer, Buffer.from(value)]);
+
+        // Send chunks when buffer is large enough
+        while (buffer.length >= MIN_CHUNK_SIZE) {
+          onChunk(buffer.subarray(0, MIN_CHUNK_SIZE));
+          buffer = buffer.subarray(MIN_CHUNK_SIZE);
+        }
       }
 
       logger.debug('Streaming synthesis complete');
