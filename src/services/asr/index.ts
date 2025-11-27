@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { createChildLogger } from '../../shared/utils/index.js';
+import { createChildLogger } from '../../shared/utils/index';
 
 const logger = createChildLogger('asr-service');
 

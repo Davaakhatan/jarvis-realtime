@@ -1,6 +1,6 @@
 import { EventEmitter } from 'events';
-import { createChildLogger } from '../../shared/utils/index.js';
-import { Message, Citation } from '../../shared/types/index.js';
+import { createChildLogger } from '../../shared/utils/index';
+import { Message, Citation } from '../../shared/types/index';
 
 const logger = createChildLogger('llm-service');
 

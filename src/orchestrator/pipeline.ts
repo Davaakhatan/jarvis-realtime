@@ -1,13 +1,13 @@
 import { EventEmitter } from 'events';
 import { v4 as uuidv4 } from 'uuid';
-import { PipelineEvent, Message } from '../shared/types/index.js';
-import { createChildLogger } from '../shared/utils/index.js';
-import { SessionManager } from './session-manager.js';
-import { ASRService, TranscriptResult } from '../services/asr/index.js';
-import { TTSService } from '../services/tts/index.js';
-import { LLMService, ToolCall } from '../services/llm/index.js';
-import { GitHubService, githubTools } from '../services/github-integration/index.js';
-import { APIPoller, apiPollerTools } from '../services/api-poller/index.js';
+import { PipelineEvent, Message } from '../shared/types/index';
+import { createChildLogger } from '../shared/utils/index';
+import { SessionManager } from './session-manager';
+import { ASRService, TranscriptResult } from '../services/asr/index';
+import { TTSService } from '../services/tts/index';
+import { LLMService, ToolCall } from '../services/llm/index';
+import { GitHubService, githubTools } from '../services/github-integration/index';
+import { APIPoller, apiPollerTools } from '../services/api-poller/index';
 
 const logger = createChildLogger('pipeline');
 
@@ -89,9 +89,14 @@ export class Pipeline extends EventEmitter {
       logger.error({ error }, 'ASR error');
     });
 
-    this.services.apiPoller.on('data', ({ endpointId, data }) => {
+    this.services.apiPoller.on('data', ({ endpointId }: { endpointId: string }) => {
       logger.debug({ endpointId }, 'API data refreshed');
     });
+  }
+
+  private isSessionInterrupted(sessionId: string): boolean {
+    const session = this.sessionManager.getSession(sessionId);
+    return !session || session.state === 'interrupted';
   }
 
   start(): void {
@@ -198,7 +203,7 @@ export class Pipeline extends EventEmitter {
       let fullResponse = '';
 
       for await (const chunk of this.services.llm.chatStream(history, { apiData: apiContext })) {
-        if (session.state === 'interrupted') {
+        if (this.isSessionInterrupted(sessionId)) {
           logger.debug({ sessionId }, 'LLM processing interrupted');
           break;
         }
@@ -214,7 +219,7 @@ export class Pipeline extends EventEmitter {
         } as PipelineEvent);
       }
 
-      if (session.state !== 'interrupted' && fullResponse) {
+      if (!this.isSessionInterrupted(sessionId) && fullResponse) {
         // Add assistant message to history
         const assistantMessage: Message = {
           id: uuidv4(),
@@ -253,8 +258,7 @@ export class Pipeline extends EventEmitter {
   }
 
   private async synthesizeResponse(sessionId: string, text: string): Promise<void> {
-    const session = this.sessionManager.getSession(sessionId);
-    if (!session || session.state === 'interrupted') {
+    if (this.isSessionInterrupted(sessionId)) {
       return;
     }
 
@@ -270,7 +274,7 @@ export class Pipeline extends EventEmitter {
 
     try {
       await this.services.tts.synthesizeStream(text, (chunk) => {
-        if (session.state === 'interrupted') {
+        if (this.isSessionInterrupted(sessionId)) {
           return;
         }
 

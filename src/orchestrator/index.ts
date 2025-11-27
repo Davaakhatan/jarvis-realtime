@@ -1,8 +1,8 @@
 import express from 'express';
-import { config, logger, createChildLogger } from '../shared/utils/index.js';
-import { SessionManager } from './session-manager.js';
-import { Pipeline } from './pipeline.js';
-import { WebSocketHandler } from './websocket-handler.js';
+import { config, logger, createChildLogger } from '../shared/utils/index';
+import { SessionManager } from './session-manager';
+import { Pipeline } from './pipeline';
+import { WebSocketHandler } from './websocket-handler';
 
 const log = createChildLogger('main');
 

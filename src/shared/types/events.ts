@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { SessionStateSchema } from './conversation.js';
+import { SessionStateSchema } from './conversation';
 
 export const EventTypeSchema = z.enum([
   'audio.chunk',
@@ -57,6 +57,14 @@ export const LLMEventSchema = BaseEventSchema.extend({
 });
 export type LLMEvent = z.infer<typeof LLMEventSchema>;
 
+export const TTSEventSchema = BaseEventSchema.extend({
+  type: z.enum(['tts.start', 'tts.chunk', 'tts.end']),
+  payload: z.object({
+    audio: z.instanceof(Buffer).optional(),
+  }),
+});
+export type TTSEvent = z.infer<typeof TTSEventSchema>;
+
 export const StateChangeEventSchema = BaseEventSchema.extend({
   type: z.literal('session.state_change'),
   payload: z.object({
@@ -88,6 +96,7 @@ export type PipelineEvent =
   | AudioChunkEvent
   | TranscriptEvent
   | LLMEvent
+  | TTSEvent
   | StateChangeEvent
   | InterruptEvent
   | ErrorEvent;

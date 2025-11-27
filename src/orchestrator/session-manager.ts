@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
-import { Session, SessionState, Conversation } from '../shared/types/index.js';
-import { createChildLogger } from '../shared/utils/index.js';
+import { Session, SessionState, Conversation } from '../shared/types/index';
+import { createChildLogger } from '../shared/utils/index';
 
 const logger = createChildLogger('session-manager');
 

@@ -1,9 +1,9 @@
 import { WebSocket, WebSocketServer } from 'ws';
 import { IncomingMessage } from 'http';
 import { v4 as uuidv4 } from 'uuid';
-import { createChildLogger } from '../shared/utils/index.js';
-import { SessionManager } from './session-manager.js';
-import { Pipeline } from './pipeline.js';
+import { createChildLogger } from '../shared/utils/index';
+import { SessionManager } from './session-manager';
+import { Pipeline } from './pipeline';
 
 const logger = createChildLogger('websocket');
 
