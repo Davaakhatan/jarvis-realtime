@@ -110,6 +110,18 @@
       margin-bottom: 1rem;
       border-radius: 12px;
       max-width: 85%;
+      position: relative;
+      animation: slideIn 0.3s ease-out;
+    }
+    @keyframes slideIn {
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
     }
     .message.user {
       background: #1a2a3a;
@@ -125,12 +137,57 @@
       color: #666;
       margin-bottom: 0.25rem;
       text-transform: uppercase;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
     }
     .message.user .role {
       color: #00d4ff;
     }
     .message.assistant .role {
       color: #44ff44;
+    }
+    .message .timestamp {
+      font-size: 0.65rem;
+      color: #555;
+      font-weight: normal;
+    }
+    .conversation-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 0.75rem 1rem;
+      background: #1a1a2e;
+      border-radius: 12px 12px 0 0;
+      margin-bottom: -1rem;
+    }
+    .conversation-title {
+      font-size: 0.85rem;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    .clear-history-btn {
+      padding: 0.4rem 0.8rem;
+      background: #ff4444;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.75rem;
+      transition: background 0.2s;
+    }
+    .clear-history-btn:hover {
+      background: #ff6666;
+    }
+    .clear-history-btn:active {
+      background: #cc0000;
+    }
+    .empty-history {
+      text-align: center;
+      color: #555;
+      padding: 2rem;
+      font-style: italic;
     }
     .interrupt-btn {
       position: fixed;
@@ -322,7 +379,13 @@
     <div class="error-code"></div>
   </div>
 
-  <div class="conversation" id="conversation"></div>
+  <div class="conversation-header">
+    <div class="conversation-title">Conversation History</div>
+    <button class="clear-history-btn" id="clearHistoryBtn">Clear History</button>
+  </div>
+  <div class="conversation" id="conversation">
+    <div class="empty-history">No messages yet. Start a conversation!</div>
+  </div>
 
   <div class="transcript" id="transcript"></div>
 
@@ -355,10 +418,85 @@
     const activityThinking = document.getElementById('activityThinking');
     const activitySpeaking = document.getElementById('activitySpeaking');
     const errorBanner = document.getElementById('errorBanner');
+    const clearHistoryBtn = document.getElementById('clearHistoryBtn');
 
     let reconnectAttempts = 0;
     const MAX_RECONNECT_DELAY = 30000;
     let errorBannerTimeout = null;
+
+    // Conversation history management
+    const HISTORY_KEY = 'jarvis_conversation_history';
+    let conversationHistory = [];
+
+    // Load history from localStorage
+    function loadHistory() {
+      try {
+        const saved = localStorage.getItem(HISTORY_KEY);
+        if (saved) {
+          conversationHistory = JSON.parse(saved);
+          renderHistory();
+        }
+      } catch (err) {
+        console.warn('Failed to load conversation history:', err);
+      }
+    }
+
+    // Save history to localStorage
+    function saveHistory() {
+      try {
+        // Keep only last 100 messages to avoid localStorage limits
+        const recentHistory = conversationHistory.slice(-100);
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(recentHistory));
+      } catch (err) {
+        console.warn('Failed to save conversation history:', err);
+      }
+    }
+
+    // Render entire history
+    function renderHistory() {
+      conversation.innerHTML = '';
+      if (conversationHistory.length === 0) {
+        conversation.innerHTML = '<div class="empty-history">No messages yet. Start a conversation!</div>';
+        return;
+      }
+      conversationHistory.forEach(msg => {
+        const div = createMessageElement(msg.role, msg.content, msg.timestamp);
+        conversation.appendChild(div);
+      });
+      conversation.scrollTop = conversation.scrollHeight;
+    }
+
+    // Create message element
+    function createMessageElement(role, content, timestamp) {
+      const div = document.createElement('div');
+      div.className = `message ${role}`;
+      const time = new Date(timestamp).toLocaleTimeString('en-US', {
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+      div.innerHTML = `
+        <div class="role">
+          ${role}
+          <span class="timestamp">${time}</span>
+        </div>
+        <div class="content">${content}</div>
+      `;
+      return div;
+    }
+
+    // Clear history
+    function clearHistory() {
+      if (conversationHistory.length === 0) return;
+
+      if (confirm('Clear entire conversation history?')) {
+        conversationHistory = [];
+        saveHistory();
+        renderHistory();
+      }
+    }
+
+    // Clear history button handler
+    clearHistoryBtn.addEventListener('click', clearHistory);
 
     // Activity indicator helpers
     function setActivityState(listening = false, thinking = false, speaking = false) {
@@ -557,11 +695,23 @@
 
     let currentAssistantMessage = '';
     let assistantMessageEl = null;
+    let currentAssistantTimestamp = null;
 
     function addMessage(role, content) {
-      const div = document.createElement('div');
-      div.className = `message ${role}`;
-      div.innerHTML = `<div class="role">${role}</div><div class="content">${content}</div>`;
+      const timestamp = Date.now();
+
+      // Remove empty history placeholder if present
+      const emptyMsg = conversation.querySelector('.empty-history');
+      if (emptyMsg) {
+        emptyMsg.remove();
+      }
+
+      // Add to history
+      conversationHistory.push({ role, content, timestamp });
+      saveHistory();
+
+      // Create and append message element
+      const div = createMessageElement(role, content, timestamp);
       conversation.appendChild(div);
       conversation.scrollTop = conversation.scrollHeight;
       return div;
@@ -569,17 +719,39 @@
 
     function updateAssistantMessage(chunk) {
       if (!assistantMessageEl) {
-        assistantMessageEl = addMessage('assistant', '');
+        // Remove empty history placeholder if present
+        const emptyMsg = conversation.querySelector('.empty-history');
+        if (emptyMsg) {
+          emptyMsg.remove();
+        }
+
         currentAssistantMessage = '';
+        currentAssistantTimestamp = Date.now();
+
+        // Create element but don't add to history yet (it's still streaming)
+        assistantMessageEl = createMessageElement('assistant', '', currentAssistantTimestamp);
+        conversation.appendChild(assistantMessageEl);
       }
+
       currentAssistantMessage += chunk;
       assistantMessageEl.querySelector('.content').textContent = currentAssistantMessage;
       conversation.scrollTop = conversation.scrollHeight;
     }
 
     function finalizeAssistantMessage() {
+      if (assistantMessageEl && currentAssistantMessage) {
+        // Now add the complete message to history
+        conversationHistory.push({
+          role: 'assistant',
+          content: currentAssistantMessage,
+          timestamp: currentAssistantTimestamp
+        });
+        saveHistory();
+      }
+
       assistantMessageEl = null;
       currentAssistantMessage = '';
+      currentAssistantTimestamp = null;
     }
 
     let recordingAnalyser = null;
@@ -1242,7 +1414,8 @@
       }
     });
 
-    // Connect on load
+    // Load history and connect on page load
+    loadHistory();
     connect();
   </script>
 </body>
