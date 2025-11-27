@@ -72,11 +72,8 @@ export class TTSService extends EventEmitter {
   ): Promise<void> {
     logger.debug({ textLength: text.length }, 'Starting streaming synthesis');
 
-    // Buffer size: ~200ms of audio at 24kHz 16-bit mono = 24000 * 2 * 0.2 = 9600 bytes
-    // Larger chunks = smoother playback with less noise from chunk boundaries
-    const MIN_CHUNK_SIZE = 9600;
-
     try {
+      // Use MP3 format - cleaner audio without PCM artifacts
       const response = await fetch('https://api.openai.com/v1/audio/speech', {
         method: 'POST',
         headers: {
@@ -88,7 +85,7 @@ export class TTSService extends EventEmitter {
           input: text,
           voice: this.config.voice,
           speed: this.config.speed,
-          response_format: 'pcm',
+          response_format: 'mp3',
         }),
       });
 
@@ -97,34 +94,13 @@ export class TTSService extends EventEmitter {
         throw new Error(`TTS API error: ${error}`);
       }
 
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('No response body');
-      }
+      // For MP3, we collect all data and send as one chunk
+      // This ensures clean audio without frame boundary issues
+      const arrayBuffer = await response.arrayBuffer();
+      const audioBuffer = Buffer.from(arrayBuffer);
 
-      // Buffer to accumulate small chunks
-      let buffer = Buffer.alloc(0);
-
-      while (true) {
-        const { done, value } = await reader.read();
-
-        if (done) {
-          // Send any remaining buffered data
-          if (buffer.length > 0) {
-            onChunk(buffer);
-          }
-          break;
-        }
-
-        // Accumulate data in buffer
-        buffer = Buffer.concat([buffer, Buffer.from(value)]);
-
-        // Send chunks when buffer is large enough
-        while (buffer.length >= MIN_CHUNK_SIZE) {
-          onChunk(buffer.subarray(0, MIN_CHUNK_SIZE));
-          buffer = buffer.subarray(MIN_CHUNK_SIZE);
-        }
-      }
+      logger.debug({ audioSize: audioBuffer.length }, 'MP3 audio received');
+      onChunk(audioBuffer);
 
       logger.debug('Streaming synthesis complete');
     } catch (error) {

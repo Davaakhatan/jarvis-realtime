@@ -359,13 +359,9 @@
 
         case 'tts.end':
           interruptBtn.classList.remove('visible');
-          // Flush any remaining buffered audio
-          if (audioQueue.length > 0 && !isPlaying) {
-            playNextChunk();
-          }
           // Wait for audio to finish before resuming listening
           const checkAudioDone = () => {
-            if (audioQueue.length === 0 && !isPlaying) {
+            if (!isPlaying) {
               isTTSSpeaking = false;
               stopInterruptVAD();
               if (alwaysListening) {
@@ -546,14 +542,11 @@
       // Don't restart passive listening here - wait for tts.end event
     }
 
-    // Audio playback system for TTS
+    // Audio playback system for TTS (MP3 format)
     let playbackContext = null;
-    let audioQueue = [];
     let isPlaying = false;
     let audioChunksReceived = 0;
-    let nextPlayTime = 0; // For seamless scheduling
-    const TTS_SAMPLE_RATE = 24000; // OpenAI TTS default for PCM
-    const MIN_BUFFER_CHUNKS = 3; // Buffer more chunks before starting playback
+    let currentSource = null; // Track current playing source for interruption
 
     // Voice interrupt during TTS playback
     let interruptVadContext = null;
@@ -566,7 +559,7 @@
 
     async function initPlaybackContext() {
       if (!playbackContext || playbackContext.state === 'closed') {
-        playbackContext = new AudioContext({ sampleRate: TTS_SAMPLE_RATE });
+        playbackContext = new AudioContext();
       }
       if (playbackContext.state === 'suspended') {
         await playbackContext.resume();
@@ -574,88 +567,66 @@
       return playbackContext;
     }
 
-    function playAudio(audioData) {
+    async function playAudio(audioData) {
       // audioData comes as { type: 'Buffer', data: [...] } from JSON-stringified Buffer
       if (!audioData || !audioData.data) {
         console.warn('Invalid audio data received');
         return;
       }
 
-      // Convert byte array to Uint8Array, then create Int16Array view
-      // This properly handles signed 16-bit PCM little-endian data
-      const byteArray = new Uint8Array(audioData.data);
-      const dataView = new DataView(byteArray.buffer);
-      const int16Array = new Int16Array(byteArray.length / 2);
-
-      for (let i = 0; i < int16Array.length; i++) {
-        // getInt16 with littleEndian=true properly handles signed values
-        int16Array[i] = dataView.getInt16(i * 2, true);
-      }
-
-      // Queue the audio chunk
-      audioQueue.push(int16Array);
       audioChunksReceived++;
+      const byteArray = new Uint8Array(audioData.data);
 
-      // Log first chunk for debugging
-      if (audioChunksReceived === 1) {
-        console.log('First audio chunk received:', {
-          byteLength: byteArray.length,
-          samples: int16Array.length,
-          duration: (int16Array.length / TTS_SAMPLE_RATE * 1000).toFixed(0) + 'ms',
-          firstSamples: Array.from(int16Array.slice(0, 10))
+      console.log('MP3 audio received:', {
+        byteLength: byteArray.length,
+        chunkNumber: audioChunksReceived
+      });
+
+      try {
+        const ctx = await initPlaybackContext();
+
+        // Decode MP3 using browser's built-in decoder - produces clean audio
+        const audioBuffer = await ctx.decodeAudioData(byteArray.buffer.slice(0));
+
+        console.log('Audio decoded:', {
+          duration: audioBuffer.duration.toFixed(2) + 's',
+          sampleRate: audioBuffer.sampleRate,
+          channels: audioBuffer.numberOfChannels
         });
+
+        // Create source and play
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(ctx.destination);
+
+        currentSource = source;
+        isPlaying = true;
+
+        source.onended = () => {
+          isPlaying = false;
+          currentSource = null;
+        };
+
+        source.start(0);
+      } catch (err) {
+        console.error('Failed to decode/play audio:', err);
       }
-
-      // Start playback after buffering enough chunks
-      if (!isPlaying && audioQueue.length >= MIN_BUFFER_CHUNKS) {
-        playNextChunk();
-      }
-    }
-
-    async function playNextChunk() {
-      if (audioQueue.length === 0) {
-        isPlaying = false;
-        nextPlayTime = 0;
-        return;
-      }
-
-      isPlaying = true;
-      const ctx = await initPlaybackContext();
-      const int16Data = audioQueue.shift();
-
-      // Convert Int16 to Float32 for Web Audio API
-      const float32Data = new Float32Array(int16Data.length);
-      for (let i = 0; i < int16Data.length; i++) {
-        float32Data[i] = int16Data[i] / 32768;
-      }
-
-      // Create audio buffer
-      const audioBuffer = ctx.createBuffer(1, float32Data.length, TTS_SAMPLE_RATE);
-      audioBuffer.getChannelData(0).set(float32Data);
-
-      // Create and play source directly to destination
-      const source = ctx.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(ctx.destination);
-
-      // Schedule seamlessly using precise timing
-      const currentTime = ctx.currentTime;
-      const startTime = nextPlayTime > currentTime ? nextPlayTime : currentTime;
-
-      source.onended = () => {
-        playNextChunk();
-      };
-
-      source.start(startTime);
-      nextPlayTime = startTime + audioBuffer.duration;
     }
 
     function stopPlayback() {
-      audioQueue = [];
       isPlaying = false;
-      nextPlayTime = 0;
       isTTSSpeaking = false;
       stopInterruptVAD();
+
+      if (currentSource) {
+        try {
+          currentSource.stop();
+        } catch (e) {
+          // Already stopped
+        }
+        currentSource = null;
+      }
+
       if (playbackContext && playbackContext.state !== 'closed') {
         playbackContext.close();
         playbackContext = null;
