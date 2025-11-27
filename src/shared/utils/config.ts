@@ -27,6 +27,13 @@ const ConfigSchema = z.object({
   // API Poller
   apiRefreshIntervalMs: z.coerce.number().default(180000), // 3 minutes
 
+  // Verification Service
+  verificationServiceUrl: z.string().default('http://localhost:8003'),
+  verificationEnabled: z.coerce.boolean().default(true),
+
+  // Vector Store Service
+  vectorStoreServiceUrl: z.string().default('http://localhost:8004'),
+
   // Performance
   maxLatencyMs: z.coerce.number().default(500),
 
@@ -44,10 +51,15 @@ const parseConfig = (): Config => {
     redisUrl: process.env.REDIS_URL,
     asrServiceUrl: process.env.ASR_SERVICE_URL,
     ttsServiceUrl: process.env.TTS_SERVICE_URL,
-    llmApiKey: process.env.LLM_API_KEY,
+    llmApiKey: (process.env.LLM_API_KEY && process.env.LLM_API_KEY !== 'your-api-key-here')
+      ? process.env.LLM_API_KEY
+      : process.env.OPENAI_API_KEY,
     llmModel: process.env.LLM_MODEL,
     githubToken: process.env.GITHUB_TOKEN,
     apiRefreshIntervalMs: process.env.API_REFRESH_INTERVAL_MS,
+    verificationServiceUrl: process.env.VERIFICATION_SERVICE_URL,
+    verificationEnabled: process.env.VERIFICATION_ENABLED,
+    vectorStoreServiceUrl: process.env.VECTOR_STORE_SERVICE_URL,
     maxLatencyMs: process.env.MAX_LATENCY_MS,
     sessionTimeoutMs: process.env.SESSION_TIMEOUT_MS,
   });

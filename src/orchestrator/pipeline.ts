@@ -1,13 +1,16 @@
 import { EventEmitter } from 'events';
 import { v4 as uuidv4 } from 'uuid';
 import { PipelineEvent, Message } from '../shared/types/index';
-import { createChildLogger } from '../shared/utils/index';
+import { createChildLogger, config } from '../shared/utils/index';
 import { SessionManager } from './session-manager';
 import { ASRService, TranscriptResult } from '../services/asr/index';
 import { TTSService } from '../services/tts/index';
 import { LLMService, ToolCall } from '../services/llm/index';
 import { GitHubService, githubTools } from '../services/github-integration/index';
 import { APIPoller, apiPollerTools } from '../services/api-poller/index';
+import { VerificationClient } from '../services/verification/index';
+import { VectorStoreClient } from '../services/vector-store/index';
+import { WakeWordService, WakeWordDetection } from '../services/wake-word/index';
 
 const logger = createChildLogger('pipeline');
 
@@ -15,6 +18,7 @@ export interface PipelineOptions {
   maxLatencyMs: number;
   openaiApiKey: string;
   githubToken?: string;
+  verificationEnabled?: boolean;
 }
 
 export interface PipelineServices {
@@ -23,6 +27,9 @@ export interface PipelineServices {
   llm: LLMService;
   github?: GitHubService;
   apiPoller: APIPoller;
+  verification: VerificationClient;
+  vectorStore: VectorStoreClient;
+  wakeWord: WakeWordService;
 }
 
 export class Pipeline extends EventEmitter {
@@ -31,6 +38,7 @@ export class Pipeline extends EventEmitter {
   private services: PipelineServices;
   private processingTimers: Map<string, number> = new Map();
   private conversationHistory: Map<string, Message[]> = new Map();
+  private audioBuffers: Map<string, Buffer[]> = new Map();
 
   constructor(
     sessionManager: SessionManager,
@@ -76,7 +84,24 @@ export class Pipeline extends EventEmitter {
       });
     }
 
-    return { asr, tts, llm, github, apiPoller };
+    const verification = new VerificationClient({
+      serviceUrl: config.verificationServiceUrl || 'http://localhost:8003',
+      enabled: this.options.verificationEnabled ?? true,
+    });
+
+    const vectorStore = new VectorStoreClient({
+      serviceUrl: config.vectorStoreServiceUrl || 'http://localhost:8004',
+      enabled: true,
+    });
+
+    const wakeWord = new WakeWordService({
+      wakeWords: ['jarvis', 'hey jarvis', 'ok jarvis'],
+      interruptWords: ['stop', 'cancel', 'wait', 'hold on', 'pause', 'never mind'],
+      sensitivity: 0.7,
+      debounceMs: 1000,
+    });
+
+    return { asr, tts, llm, github, apiPoller, verification, vectorStore, wakeWord };
   }
 
   private setupServiceListeners(): void {
@@ -91,6 +116,18 @@ export class Pipeline extends EventEmitter {
 
     this.services.apiPoller.on('data', ({ endpointId }: { endpointId: string }) => {
       logger.debug({ endpointId }, 'API data refreshed');
+    });
+
+    // Listen for wake word events
+    this.services.wakeWord.on('wake', (detection: WakeWordDetection) => {
+      logger.info({ word: detection.word }, 'Wake word detected');
+      this.emit('wakeWordDetected', detection);
+    });
+
+    // Listen for interrupt word events
+    this.services.wakeWord.on('interrupt', (detection: WakeWordDetection) => {
+      logger.info({ word: detection.word }, 'Interrupt word detected');
+      this.emit('interruptDetected', detection);
     });
   }
 
@@ -126,8 +163,11 @@ export class Pipeline extends EventEmitter {
 
     this.sessionManager.updateSessionState(sessionId, 'listening');
 
-    // Push audio to ASR service
-    this.services.asr.pushAudio(audioData);
+    // Store audio in per-session buffer
+    if (!this.audioBuffers.has(sessionId)) {
+      this.audioBuffers.set(sessionId, []);
+    }
+    this.audioBuffers.get(sessionId)!.push(audioData);
 
     this.emit('event', {
       id: uuidv4(),
@@ -142,13 +182,165 @@ export class Pipeline extends EventEmitter {
     } as PipelineEvent);
   }
 
+  async processAudioEnd(sessionId: string): Promise<void> {
+    const session = this.sessionManager.getSession(sessionId);
+    if (!session) {
+      logger.warn({ sessionId }, 'No session found for audio end processing');
+      return;
+    }
+
+    const audioChunks = this.audioBuffers.get(sessionId) || [];
+    if (audioChunks.length === 0) {
+      logger.debug({ sessionId }, 'No audio data to process');
+      return;
+    }
+
+    // Combine all audio chunks
+    const audioData = Buffer.concat(audioChunks);
+    this.audioBuffers.delete(sessionId);
+
+    // Skip if audio is too short (less than 0.5 seconds at 16kHz, 16-bit)
+    if (audioData.length < 16000) {
+      logger.debug({ sessionId, length: audioData.length }, 'Audio too short, skipping');
+      this.sessionManager.updateSessionState(sessionId, 'idle');
+      return;
+    }
+
+    logger.debug({ sessionId, audioLength: audioData.length }, 'Processing audio');
+    this.sessionManager.updateSessionState(sessionId, 'processing');
+
+    this.emit('event', {
+      id: uuidv4(),
+      sessionId,
+      type: 'audio.end',
+      timestamp: new Date(),
+      payload: {},
+    } as PipelineEvent);
+
+    try {
+      // Transcribe the audio using ASR service
+      const transcript = await this.transcribeAudio(audioData);
+
+      if (transcript && transcript.trim()) {
+        logger.info({ sessionId, transcript }, 'Transcription result');
+        await this.processTranscript(sessionId, transcript, true);
+      } else {
+        logger.debug({ sessionId }, 'No transcript from audio');
+        this.sessionManager.updateSessionState(sessionId, 'idle');
+      }
+    } catch (error) {
+      logger.error({ sessionId, error }, 'Audio transcription failed');
+      this.sessionManager.updateSessionState(sessionId, 'idle');
+    }
+  }
+
+  private async transcribeAudio(audioData: Buffer): Promise<string | null> {
+    try {
+      // Convert raw PCM to WAV format for Whisper API
+      const wavBuffer = this.pcmToWav(audioData);
+
+      // Use Node.js Blob from buffer module
+      const { Blob } = await import('buffer');
+      const audioBlob = new Blob([wavBuffer], { type: 'audio/wav' });
+
+      const formData = new FormData();
+      formData.append('file', audioBlob, 'audio.wav');
+      formData.append('model', 'whisper-1');
+      formData.append('language', 'en');
+      formData.append('response_format', 'json');
+
+      logger.debug({ apiKeyPresent: !!this.options.openaiApiKey, audioSize: wavBuffer.length }, 'Sending to Whisper API');
+
+      const response = await fetch(
+        'https://api.openai.com/v1/audio/transcriptions',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${this.options.openaiApiKey}`,
+          },
+          body: formData,
+        }
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Whisper API error (${response.status}): ${errorText}`);
+      }
+
+      const result = (await response.json()) as { text: string };
+      return result.text;
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      logger.error({ error: errorMessage, stack: error instanceof Error ? error.stack : undefined }, 'Transcription failed');
+      return null;
+    }
+  }
+
+  private pcmToWav(pcmData: Buffer): Buffer {
+    const sampleRate = 16000;
+    const numChannels = 1;
+    const bitsPerSample = 16;
+    const byteRate = (sampleRate * numChannels * bitsPerSample) / 8;
+    const blockAlign = (numChannels * bitsPerSample) / 8;
+    const dataSize = pcmData.length;
+    const headerSize = 44;
+    const fileSize = headerSize + dataSize - 8;
+
+    const header = Buffer.alloc(headerSize);
+
+    // RIFF header
+    header.write('RIFF', 0);
+    header.writeUInt32LE(fileSize, 4);
+    header.write('WAVE', 8);
+
+    // fmt chunk
+    header.write('fmt ', 12);
+    header.writeUInt32LE(16, 16); // fmt chunk size
+    header.writeUInt16LE(1, 20); // audio format (PCM)
+    header.writeUInt16LE(numChannels, 22);
+    header.writeUInt32LE(sampleRate, 24);
+    header.writeUInt32LE(byteRate, 28);
+    header.writeUInt16LE(blockAlign, 32);
+    header.writeUInt16LE(bitsPerSample, 34);
+
+    // data chunk
+    header.write('data', 36);
+    header.writeUInt32LE(dataSize, 40);
+
+    return Buffer.concat([header, pcmData]);
+  }
+
   async processTranscript(
     sessionId: string,
     text: string,
     isFinal: boolean
   ): Promise<void> {
     const session = this.sessionManager.getSession(sessionId);
-    if (!session || session.state === 'interrupted') {
+    if (!session) {
+      return;
+    }
+
+    // Check for interrupt words while speaking
+    if (session.state === 'speaking') {
+      const detection = this.services.wakeWord.checkTranscript(text);
+      if (detection?.type === 'interrupt') {
+        logger.info({ sessionId, word: detection.word }, 'Interrupt detected while speaking');
+        this.interrupt(sessionId);
+        return;
+      }
+    }
+
+    // If session is interrupted, check for wake word to resume
+    if (session.state === 'interrupted') {
+      const detection = this.services.wakeWord.checkTranscript(text);
+      if (detection?.type === 'wake') {
+        // Extract command after wake word and process it
+        const command = this.services.wakeWord.extractCommandAfterWakeWord(text, detection.word);
+        if (command) {
+          this.sessionManager.updateSessionState(sessionId, 'processing');
+          await this.processWithLLM(sessionId, command);
+        }
+      }
       return;
     }
 
@@ -164,8 +356,21 @@ export class Pipeline extends EventEmitter {
     } as PipelineEvent);
 
     if (isFinal && text.trim()) {
+      // Check for wake word at start of utterance
+      const detection = this.services.wakeWord.checkTranscript(text);
+      let processText = text;
+
+      if (detection?.type === 'wake') {
+        // Extract the actual command after wake word
+        processText = this.services.wakeWord.extractCommandAfterWakeWord(text, detection.word);
+        if (!processText) {
+          // Wake word only, wait for next utterance
+          return;
+        }
+      }
+
       this.sessionManager.updateSessionState(sessionId, 'processing');
-      await this.processWithLLM(sessionId, text);
+      await this.processWithLLM(sessionId, processText);
     }
   }
 
@@ -186,6 +391,11 @@ export class Pipeline extends EventEmitter {
       timestamp: new Date(),
     };
     history.push(userMessage);
+
+    // Store user message in vector store for persistent memory
+    this.storeMessageInVectorStore(session.conversationId, 'user', text).catch((err: Error) => {
+      logger.error({ error: err }, 'Failed to store user message in vector store');
+    });
 
     this.emit('event', {
       id: uuidv4(),
@@ -220,26 +430,70 @@ export class Pipeline extends EventEmitter {
       }
 
       if (!this.isSessionInterrupted(sessionId) && fullResponse) {
+        // Verify the response before proceeding
+        let verifiedResponse = fullResponse;
+        try {
+          const verificationResult = await this.services.verification.verify({
+            sessionId,
+            responseText: fullResponse,
+            claimedSources: [],
+            context: { apiData: apiContext },
+          });
+
+          if (!verificationResult.verified) {
+            logger.warn(
+              { sessionId, confidence: verificationResult.confidence, warnings: verificationResult.warnings },
+              'Response verification failed - using modified response'
+            );
+            // Use modified response with disclaimer if available
+            if (verificationResult.modifiedResponse) {
+              verifiedResponse = verificationResult.modifiedResponse;
+            }
+          }
+
+          // Emit verification event
+          this.emit('event', {
+            id: uuidv4(),
+            sessionId,
+            type: 'llm.end',
+            timestamp: new Date(),
+            payload: {
+              text: verifiedResponse,
+              verification: {
+                verified: verificationResult.verified,
+                confidence: verificationResult.confidence,
+                citations: verificationResult.citations,
+              },
+            },
+          } as PipelineEvent);
+        } catch (verifyError) {
+          logger.error({ sessionId, error: verifyError }, 'Verification service error - proceeding without verification');
+          this.emit('event', {
+            id: uuidv4(),
+            sessionId,
+            type: 'llm.end',
+            timestamp: new Date(),
+            payload: { text: fullResponse },
+          } as PipelineEvent);
+        }
+
         // Add assistant message to history
         const assistantMessage: Message = {
           id: uuidv4(),
           role: 'assistant',
-          content: fullResponse,
+          content: verifiedResponse,
           timestamp: new Date(),
         };
         history.push(assistantMessage);
         this.conversationHistory.set(session.conversationId, history);
 
-        this.emit('event', {
-          id: uuidv4(),
-          sessionId,
-          type: 'llm.end',
-          timestamp: new Date(),
-          payload: { text: fullResponse },
-        } as PipelineEvent);
+        // Store messages in vector store for persistent memory
+        this.storeMessageInVectorStore(session.conversationId, 'assistant', verifiedResponse).catch((err: Error) => {
+          logger.error({ error: err }, 'Failed to store assistant message in vector store');
+        });
 
-        // Synthesize speech
-        await this.synthesizeResponse(sessionId, fullResponse);
+        // Synthesize speech with verified response
+        await this.synthesizeResponse(sessionId, verifiedResponse);
       }
     } catch (error) {
       logger.error({ sessionId, error }, 'LLM processing failed');
@@ -382,5 +636,36 @@ export class Pipeline extends EventEmitter {
   clearHistory(conversationId: string): void {
     this.conversationHistory.delete(conversationId);
     logger.debug({ conversationId }, 'Conversation history cleared');
+  }
+
+  private async storeMessageInVectorStore(
+    conversationId: string,
+    role: string,
+    content: string
+  ): Promise<void> {
+    try {
+      await this.services.vectorStore.storeMessage(conversationId, {
+        role,
+        content,
+        timestamp: new Date().toISOString(),
+      });
+      logger.debug({ conversationId, role }, 'Message stored in vector store');
+    } catch (error) {
+      logger.error({ error, conversationId }, 'Failed to store message in vector store');
+    }
+  }
+
+  async getRelevantContext(conversationId: string, query: string): Promise<string[]> {
+    try {
+      const context = await this.services.vectorStore.getConversationContext(
+        conversationId,
+        query,
+        5
+      );
+      return context.context.map(c => `${c.role}: ${c.content}`);
+    } catch (error) {
+      logger.error({ error, conversationId }, 'Failed to get relevant context');
+      return [];
+    }
   }
 }

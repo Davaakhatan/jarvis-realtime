@@ -1,4 +1,5 @@
 import express from 'express';
+import path from 'path';
 import { config, logger, createChildLogger } from '../shared/utils/index';
 import { SessionManager } from './session-manager';
 import { Pipeline } from './pipeline';
@@ -36,6 +37,9 @@ async function main(): Promise<void> {
   // Setup REST API for health checks and management
   const app = express();
   app.use(express.json());
+
+  // Serve static files (test client)
+  app.use(express.static(path.join(__dirname, '../../public')));
 
   app.get('/health', (req, res) => {
     res.json({ status: 'ok', timestamp: new Date().toISOString() });

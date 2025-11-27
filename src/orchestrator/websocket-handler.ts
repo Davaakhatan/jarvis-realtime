@@ -100,6 +100,11 @@ export class WebSocketHandler {
       case 'interrupt':
         this.pipeline.interrupt(sessionId);
         break;
+      case 'audio.end':
+        // Audio recording stopped, trigger processing
+        logger.debug({ sessionId }, 'Audio stream ended');
+        this.pipeline.processAudioEnd(sessionId);
+        break;
       case 'transcript':
         if (typeof message.text === 'string') {
           this.pipeline.processTranscript(

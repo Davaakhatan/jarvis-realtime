@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jarvis Voice Assistant</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0a0a0f;
+      color: #e0e0e0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 2rem;
+    }
+    h1 {
+      color: #00d4ff;
+      margin-bottom: 0.5rem;
+    }
+    .subtitle {
+      color: #666;
+      margin-bottom: 2rem;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+      padding: 0.5rem 1rem;
+      background: #1a1a2e;
+      border-radius: 20px;
+    }
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #ff4444;
+    }
+    .status-dot.connected {
+      background: #44ff44;
+    }
+    .voice-button {
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      border: 3px solid #00d4ff;
+      background: linear-gradient(145deg, #1a1a2e, #0a0a1a);
+      color: #00d4ff;
+      font-size: 2rem;
+      cursor: pointer;
+      transition: all 0.3s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 2rem 0;
+    }
+    .voice-button:hover {
+      transform: scale(1.05);
+      box-shadow: 0 0 30px rgba(0, 212, 255, 0.3);
+    }
+    .voice-button.recording {
+      background: linear-gradient(145deg, #2a1a2e, #1a0a1a);
+      border-color: #ff4444;
+      animation: pulse 1.5s infinite;
+    }
+    .voice-button.processing {
+      border-color: #ffaa00;
+    }
+    .voice-button.speaking {
+      border-color: #44ff44;
+    }
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 20px rgba(255, 68, 68, 0.4); }
+      50% { box-shadow: 0 0 40px rgba(255, 68, 68, 0.6); }
+    }
+    .state-label {
+      font-size: 0.9rem;
+      color: #888;
+      margin-bottom: 2rem;
+      text-transform: uppercase;
+      letter-spacing: 2px;
+    }
+    .conversation {
+      width: 100%;
+      max-width: 600px;
+      flex: 1;
+      overflow-y: auto;
+      padding: 1rem;
+      background: #12121a;
+      border-radius: 12px;
+      margin-bottom: 1rem;
+    }
+    .message {
+      padding: 1rem;
+      margin-bottom: 1rem;
+      border-radius: 12px;
+      max-width: 85%;
+    }
+    .message.user {
+      background: #1a2a3a;
+      margin-left: auto;
+      border-bottom-right-radius: 4px;
+    }
+    .message.assistant {
+      background: #1a1a2e;
+      border-bottom-left-radius: 4px;
+    }
+    .message .role {
+      font-size: 0.75rem;
+      color: #666;
+      margin-bottom: 0.25rem;
+      text-transform: uppercase;
+    }
+    .message.user .role {
+      color: #00d4ff;
+    }
+    .message.assistant .role {
+      color: #44ff44;
+    }
+    .interrupt-btn {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      padding: 1rem 2rem;
+      background: #ff4444;
+      color: white;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 1rem;
+      display: none;
+    }
+    .interrupt-btn.visible {
+      display: block;
+    }
+    .transcript {
+      font-style: italic;
+      color: #888;
+      padding: 0.5rem;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h1>JARVIS</h1>
+  <p class="subtitle">Real-time Voice Assistant</p>
+  <p class="subtitle" style="font-size: 0.75rem; margin-top: -1rem;">Wake: "Jarvis" | Interrupt: "Stop", "Cancel", "Wait"</p>
+
+  <div class="status">
+    <div class="status-dot" id="statusDot"></div>
+    <span id="statusText">Disconnected</span>
+  </div>
+
+  <button class="voice-button" id="voiceBtn">🎤</button>
+  <div class="state-label" id="stateLabel">Press to speak</div>
+
+  <div class="conversation" id="conversation"></div>
+
+  <div class="transcript" id="transcript"></div>
+
+  <button class="interrupt-btn" id="interruptBtn">⏹ Interrupt</button>
+
+  <script>
+    const WS_URL = 'ws://localhost:3001';
+    let ws = null;
+    let mediaRecorder = null;
+    let audioContext = null;
+    let isRecording = false;
+    let sessionId = null;
+
+    const voiceBtn = document.getElementById('voiceBtn');
+    const stateLabel = document.getElementById('stateLabel');
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const conversation = document.getElementById('conversation');
+    const transcript = document.getElementById('transcript');
+    const interruptBtn = document.getElementById('interruptBtn');
+
+    function connect() {
+      ws = new WebSocket(WS_URL);
+
+      ws.onopen = () => {
+        statusDot.classList.add('connected');
+        statusText.textContent = 'Connected';
+        stateLabel.textContent = 'Press to speak';
+      };
+
+      ws.onclose = () => {
+        statusDot.classList.remove('connected');
+        statusText.textContent = 'Disconnected';
+        stateLabel.textContent = 'Reconnecting...';
+        setTimeout(connect, 3000);
+      };
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+      };
+
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        handleMessage(data);
+      };
+    }
+
+    function handleMessage(data) {
+      console.log('Received:', data);
+
+      switch (data.type) {
+        case 'session.created':
+          sessionId = data.sessionId;
+          console.log('Session created:', sessionId);
+          break;
+
+        case 'transcript.partial':
+          transcript.textContent = data.payload?.text || '';
+          break;
+
+        case 'transcript.final':
+          transcript.textContent = '';
+          addMessage('user', data.payload?.text || '');
+          break;
+
+        case 'llm.chunk':
+          updateAssistantMessage(data.payload?.text || '');
+          break;
+
+        case 'llm.end':
+          finalizeAssistantMessage();
+          break;
+
+        case 'tts.start':
+          voiceBtn.className = 'voice-button speaking';
+          stateLabel.textContent = 'Speaking...';
+          interruptBtn.classList.add('visible');
+          break;
+
+        case 'tts.chunk':
+          // Play audio chunk
+          if (data.payload?.audio) {
+            playAudio(data.payload.audio);
+          }
+          break;
+
+        case 'tts.end':
+          voiceBtn.className = 'voice-button';
+          stateLabel.textContent = 'Press to speak';
+          interruptBtn.classList.remove('visible');
+          break;
+
+        case 'session.interrupt':
+          voiceBtn.className = 'voice-button';
+          stateLabel.textContent = 'Interrupted - Say "Jarvis" or press to speak';
+          interruptBtn.classList.remove('visible');
+          break;
+
+        case 'session.state_change':
+          console.log('State changed:', data.payload);
+          break;
+
+        case 'error':
+          console.error('Error:', data.payload);
+          stateLabel.textContent = 'Error: ' + (data.payload?.message || 'Unknown');
+          break;
+      }
+    }
+
+    let currentAssistantMessage = '';
+    let assistantMessageEl = null;
+
+    function addMessage(role, content) {
+      const div = document.createElement('div');
+      div.className = `message ${role}`;
+      div.innerHTML = `<div class="role">${role}</div><div class="content">${content}</div>`;
+      conversation.appendChild(div);
+      conversation.scrollTop = conversation.scrollHeight;
+      return div;
+    }
+
+    function updateAssistantMessage(chunk) {
+      if (!assistantMessageEl) {
+        assistantMessageEl = addMessage('assistant', '');
+        currentAssistantMessage = '';
+      }
+      currentAssistantMessage += chunk;
+      assistantMessageEl.querySelector('.content').textContent = currentAssistantMessage;
+      conversation.scrollTop = conversation.scrollHeight;
+    }
+
+    function finalizeAssistantMessage() {
+      assistantMessageEl = null;
+      currentAssistantMessage = '';
+    }
+
+    async function startRecording() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            sampleRate: 16000,
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true
+          }
+        });
+
+        audioContext = new AudioContext({ sampleRate: 16000 });
+        const source = audioContext.createMediaStreamSource(stream);
+        const processor = audioContext.createScriptProcessor(4096, 1, 1);
+
+        processor.onaudioprocess = (e) => {
+          if (!isRecording) return;
+
+          const inputData = e.inputBuffer.getChannelData(0);
+          const pcmData = new Int16Array(inputData.length);
+
+          for (let i = 0; i < inputData.length; i++) {
+            pcmData[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768));
+          }
+
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(pcmData.buffer);
+          }
+        };
+
+        source.connect(processor);
+        processor.connect(audioContext.destination);
+
+        isRecording = true;
+        voiceBtn.className = 'voice-button recording';
+        stateLabel.textContent = 'Listening...';
+
+      } catch (err) {
+        console.error('Error accessing microphone:', err);
+        stateLabel.textContent = 'Microphone access denied';
+      }
+    }
+
+    function stopRecording() {
+      isRecording = false;
+
+      if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+      }
+
+      voiceBtn.className = 'voice-button processing';
+      stateLabel.textContent = 'Processing...';
+
+      // Send end of audio signal
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'audio.end' }));
+      }
+    }
+
+    function playAudio(base64Audio) {
+      // TODO: Implement audio playback from base64/buffer
+      console.log('Audio chunk received');
+    }
+
+    voiceBtn.addEventListener('mousedown', () => {
+      if (!isRecording && ws && ws.readyState === WebSocket.OPEN) {
+        startRecording();
+      }
+    });
+
+    voiceBtn.addEventListener('mouseup', () => {
+      if (isRecording) {
+        stopRecording();
+      }
+    });
+
+    voiceBtn.addEventListener('mouseleave', () => {
+      if (isRecording) {
+        stopRecording();
+      }
+    });
+
+    interruptBtn.addEventListener('click', () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'interrupt' }));
+      }
+    });
+
+    // Keyboard shortcut: Space to talk
+    document.addEventListener('keydown', (e) => {
+      if (e.code === 'Space' && !e.repeat && !isRecording) {
+        e.preventDefault();
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          startRecording();
+        }
+      }
+    });
+
+    document.addEventListener('keyup', (e) => {
+      if (e.code === 'Space' && isRecording) {
+        e.preventDefault();
+        stopRecording();
+      }
+    });
+
+    // Connect on load
+    connect();
+  </script>
+</body>
+</html>

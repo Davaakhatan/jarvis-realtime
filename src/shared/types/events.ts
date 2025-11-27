@@ -35,6 +35,12 @@ export const AudioChunkEventSchema = BaseEventSchema.extend({
 });
 export type AudioChunkEvent = z.infer<typeof AudioChunkEventSchema>;
 
+export const AudioEndEventSchema = BaseEventSchema.extend({
+  type: z.literal('audio.end'),
+  payload: z.object({}),
+});
+export type AudioEndEvent = z.infer<typeof AudioEndEventSchema>;
+
 export const TranscriptEventSchema = BaseEventSchema.extend({
   type: z.enum(['transcript.partial', 'transcript.final']),
   payload: z.object({
@@ -94,6 +100,7 @@ export type ErrorEvent = z.infer<typeof ErrorEventSchema>;
 
 export type PipelineEvent =
   | AudioChunkEvent
+  | AudioEndEvent
   | TranscriptEvent
   | LLMEvent
   | TTSEvent
