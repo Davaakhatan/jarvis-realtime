@@ -11,31 +11,94 @@
       padding: 0;
     }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0a0a0f;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+      background: linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 100%);
       color: #e0e0e0;
       min-height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: auto 1fr;
+      gap: 1.5rem;
       padding: 2rem;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    .header {
+      text-align: center;
+      padding: 1rem 0;
     }
     h1 {
       color: #00d4ff;
-      margin-bottom: 0.5rem;
+      margin-bottom: 0.25rem;
+      font-size: 2.5rem;
+      font-weight: 700;
+      letter-spacing: 2px;
     }
     .subtitle {
+      color: #888;
+      margin-bottom: 0.5rem;
+      font-size: 0.9rem;
+    }
+    .instructions {
       color: #666;
-      margin-bottom: 2rem;
+      font-size: 0.75rem;
+      margin-top: 0.5rem;
+    }
+    .main-container {
+      display: grid;
+      grid-template-columns: 400px 1fr;
+      gap: 2rem;
+      height: 100%;
+      min-height: 0;
+    }
+    @media (max-width: 1024px) {
+      .main-container {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+      }
+    }
+    .controls-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+      background: rgba(26, 26, 46, 0.5);
+      backdrop-filter: blur(10px);
+      border-radius: 20px;
+      padding: 2rem;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .controls-header {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }
+    .voice-control {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1rem;
+      padding: 1.5rem 0;
+    }
+    .conversation-panel {
+      display: flex;
+      flex-direction: column;
+      background: rgba(26, 26, 46, 0.5);
+      backdrop-filter: blur(10px);
+      border-radius: 20px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      overflow: hidden;
+      min-height: 0;
     }
     .status {
       display: flex;
       align-items: center;
       gap: 0.5rem;
-      margin-bottom: 1rem;
-      padding: 0.5rem 1rem;
-      background: #1a1a2e;
-      border-radius: 20px;
+      padding: 0.75rem 1rem;
+      background: rgba(10, 10, 15, 0.5);
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
     }
     .status-dot {
       width: 10px;
@@ -47,26 +110,46 @@
       background: #44ff44;
     }
     .voice-button {
-      width: 120px;
-      height: 120px;
+      width: 140px;
+      height: 140px;
       border-radius: 50%;
-      border: 3px solid #00d4ff;
-      background: linear-gradient(145deg, #1a1a2e, #0a0a1a);
+      border: 4px solid #00d4ff;
+      background: linear-gradient(145deg, #1a2a3e, #0f1923);
       color: #00d4ff;
-      font-size: 2rem;
+      font-size: 3rem;
       cursor: pointer;
-      transition: all 0.3s;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
       display: flex;
       align-items: center;
       justify-content: center;
-      margin: 2rem 0;
+      box-shadow: 0 10px 30px rgba(0, 212, 255, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+      position: relative;
+    }
+    .voice-button::before {
+      content: '';
+      position: absolute;
+      inset: -4px;
+      border-radius: 50%;
+      padding: 4px;
+      background: linear-gradient(145deg, #00d4ff, #0088cc);
+      -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+      -webkit-mask-composite: xor;
+      mask-composite: exclude;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .voice-button:hover::before {
+      opacity: 1;
     }
     .voice-button:hover {
-      transform: scale(1.05);
-      box-shadow: 0 0 30px rgba(0, 212, 255, 0.3);
+      transform: scale(1.08);
+      box-shadow: 0 15px 40px rgba(0, 212, 255, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+    }
+    .voice-button:active {
+      transform: scale(0.98);
     }
     .voice-button.recording {
-      background: linear-gradient(145deg, #2a1a2e, #1a0a1a);
+      background: linear-gradient(145deg, #3a1a2e, #2a1a1e);
       border-color: #ff4444;
       animation: pulse 1.5s infinite;
     }
@@ -77,60 +160,81 @@
       border-color: #44ff44;
     }
     @keyframes pulse {
-      0%, 100% { box-shadow: 0 0 20px rgba(255, 68, 68, 0.4); }
-      50% { box-shadow: 0 0 40px rgba(255, 68, 68, 0.6); }
+      0%, 100% {
+        box-shadow: 0 10px 30px rgba(255, 68, 68, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.1);
+      }
+      50% {
+        box-shadow: 0 15px 50px rgba(255, 68, 68, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+      }
     }
     .state-label {
-      font-size: 0.9rem;
+      font-size: 0.85rem;
       color: #888;
-      margin-bottom: 2rem;
       text-transform: uppercase;
-      letter-spacing: 2px;
-      transition: color 0.3s, transform 0.2s;
+      letter-spacing: 1.5px;
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      font-weight: 500;
     }
     .state-label.active {
       color: #00d4ff;
-      transform: scale(1.05);
+      text-shadow: 0 0 10px rgba(0, 212, 255, 0.5);
     }
     .state-label.error {
       color: #ff4444;
+      text-shadow: 0 0 10px rgba(255, 68, 68, 0.5);
     }
     .conversation {
-      width: 100%;
-      max-width: 600px;
       flex: 1;
       overflow-y: auto;
-      padding: 1rem;
-      background: #12121a;
-      border-radius: 12px;
-      margin-bottom: 1rem;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      min-height: 0;
+    }
+    .conversation::-webkit-scrollbar {
+      width: 8px;
+    }
+    .conversation::-webkit-scrollbar-track {
+      background: rgba(10, 10, 15, 0.3);
+      border-radius: 4px;
+    }
+    .conversation::-webkit-scrollbar-thumb {
+      background: rgba(0, 212, 255, 0.3);
+      border-radius: 4px;
+    }
+    .conversation::-webkit-scrollbar-thumb:hover {
+      background: rgba(0, 212, 255, 0.5);
     }
     .message {
-      padding: 1rem;
-      margin-bottom: 1rem;
-      border-radius: 12px;
-      max-width: 85%;
+      padding: 1rem 1.25rem;
+      border-radius: 16px;
+      max-width: 80%;
       position: relative;
-      animation: slideIn 0.3s ease-out;
+      animation: slideIn 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+      border: 1px solid rgba(255, 255, 255, 0.05);
     }
     @keyframes slideIn {
       from {
         opacity: 0;
-        transform: translateY(10px);
+        transform: translateY(15px) scale(0.95);
       }
       to {
         opacity: 1;
-        transform: translateY(0);
+        transform: translateY(0) scale(1);
       }
     }
     .message.user {
-      background: #1a2a3a;
+      background: linear-gradient(135deg, #1a2a3a 0%, #152533 100%);
       margin-left: auto;
       border-bottom-right-radius: 4px;
+      border-left: 3px solid #00d4ff;
     }
     .message.assistant {
-      background: #1a1a2e;
+      background: linear-gradient(135deg, #1a1a2e 0%, #151525 100%);
       border-bottom-left-radius: 4px;
+      border-left: 3px solid #44ff44;
     }
     .message .role {
       font-size: 0.75rem;
@@ -156,32 +260,37 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 0.75rem 1rem;
-      background: #1a1a2e;
-      border-radius: 12px 12px 0 0;
-      margin-bottom: -1rem;
+      padding: 1.25rem 1.5rem;
+      background: rgba(10, 10, 15, 0.5);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
     }
     .conversation-title {
-      font-size: 0.85rem;
-      color: #888;
+      font-size: 0.9rem;
+      color: #00d4ff;
       text-transform: uppercase;
-      letter-spacing: 1px;
+      letter-spacing: 1.5px;
+      font-weight: 600;
     }
     .clear-history-btn {
-      padding: 0.4rem 0.8rem;
-      background: #ff4444;
+      padding: 0.5rem 1rem;
+      background: linear-gradient(145deg, #ff4444, #cc0000);
       color: white;
       border: none;
-      border-radius: 6px;
+      border-radius: 8px;
       cursor: pointer;
       font-size: 0.75rem;
-      transition: background 0.2s;
+      font-weight: 500;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      box-shadow: 0 2px 8px rgba(255, 68, 68, 0.3);
     }
     .clear-history-btn:hover {
-      background: #ff6666;
+      background: linear-gradient(145deg, #ff6666, #ff4444);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(255, 68, 68, 0.4);
     }
     .clear-history-btn:active {
-      background: #cc0000;
+      transform: translateY(0);
+      box-shadow: 0 2px 6px rgba(255, 68, 68, 0.3);
     }
     .empty-history {
       text-align: center;
@@ -194,36 +303,40 @@
       bottom: 2rem;
       right: 2rem;
       padding: 1rem 2rem;
-      background: #ff4444;
+      background: linear-gradient(145deg, #ff4444, #cc0000);
       color: white;
       border: none;
-      border-radius: 8px;
+      border-radius: 12px;
       cursor: pointer;
       font-size: 1rem;
+      font-weight: 600;
       display: none;
+      box-shadow: 0 4px 20px rgba(255, 68, 68, 0.4);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     }
     .interrupt-btn.visible {
       display: block;
     }
-    .transcript {
-      font-style: italic;
-      color: #888;
-      padding: 0.5rem;
-      text-align: center;
+    .interrupt-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 25px rgba(255, 68, 68, 0.5);
+    }
+    .interrupt-btn:active {
+      transform: translateY(0);
     }
     .mode-toggle {
       display: flex;
       align-items: center;
       gap: 0.75rem;
-      margin-bottom: 1rem;
-      padding: 0.5rem 1rem;
-      background: #1a1a2e;
-      border-radius: 20px;
+      padding: 0.75rem 1rem;
+      background: rgba(10, 10, 15, 0.5);
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
     }
     .toggle-switch {
       position: relative;
-      width: 50px;
-      height: 26px;
+      width: 52px;
+      height: 28px;
     }
     .toggle-switch input {
       opacity: 0;
@@ -237,23 +350,26 @@
       left: 0;
       right: 0;
       bottom: 0;
-      background: #333;
-      transition: 0.3s;
-      border-radius: 26px;
+      background: rgba(51, 51, 51, 0.8);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      border-radius: 28px;
+      box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
     }
     .toggle-slider:before {
       position: absolute;
       content: "";
-      height: 20px;
-      width: 20px;
+      height: 22px;
+      width: 22px;
       left: 3px;
       bottom: 3px;
-      background: white;
-      transition: 0.3s;
+      background: linear-gradient(145deg, #ffffff, #e0e0e0);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
       border-radius: 50%;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
     }
     .toggle-switch input:checked + .toggle-slider {
-      background: #00d4ff;
+      background: linear-gradient(145deg, #00d4ff, #0088cc);
+      box-shadow: 0 0 10px rgba(0, 212, 255, 0.3);
     }
     .toggle-switch input:checked + .toggle-slider:before {
       transform: translateX(24px);
@@ -291,35 +407,61 @@
     .activity-panel {
       display: flex;
       gap: 0.5rem;
-      margin-bottom: 1rem;
       flex-wrap: wrap;
       justify-content: center;
+      padding: 0.75rem;
+      background: rgba(10, 10, 15, 0.3);
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
     }
     .activity-indicator {
-      padding: 0.4rem 0.8rem;
-      background: #1a1a2e;
-      border-radius: 12px;
+      padding: 0.5rem 1rem;
+      background: rgba(26, 26, 46, 0.5);
+      border-radius: 20px;
       font-size: 0.75rem;
       color: #666;
-      border: 1px solid transparent;
-      transition: all 0.3s;
-      opacity: 0.5;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      opacity: 0.4;
+      backdrop-filter: blur(5px);
     }
     .activity-indicator.active {
       opacity: 1;
+      box-shadow: 0 0 15px currentColor;
       border-color: currentColor;
+      transform: scale(1.05);
     }
     .activity-indicator.listening {
       color: #ff4444;
     }
+    .activity-indicator.listening.active {
+      background: rgba(255, 68, 68, 0.1);
+    }
     .activity-indicator.processing {
       color: #ffaa00;
+    }
+    .activity-indicator.thinking {
+      color: #00d4ff;
+    }
+    .activity-indicator.thinking.active {
+      background: rgba(0, 212, 255, 0.1);
     }
     .activity-indicator.speaking {
       color: #44ff44;
     }
-    .activity-indicator.thinking {
+    .activity-indicator.speaking.active {
+      background: rgba(68, 255, 68, 0.1);
+    }
+    .transcript {
+      font-style: italic;
       color: #00d4ff;
+      padding: 1rem;
+      text-align: center;
+      min-height: 3rem;
+      background: rgba(0, 212, 255, 0.05);
+      border-radius: 12px;
+      border: 1px dashed rgba(0, 212, 255, 0.2);
+      font-size: 0.9rem;
     }
     .error-banner {
       position: fixed;
@@ -347,47 +489,59 @@
   </style>
 </head>
 <body>
-  <h1>JARVIS</h1>
-  <p class="subtitle">Real-time Voice Assistant</p>
-  <p class="subtitle" style="font-size: 0.75rem; margin-top: -1rem;">Wake: "Jarvis" | Interrupt: "Stop", "Cancel", "Wait"</p>
-
-  <div class="mode-toggle">
-    <label class="toggle-switch">
-      <input type="checkbox" id="alwaysListenToggle">
-      <span class="toggle-slider"></span>
-    </label>
-    <span id="modeLabel">Push-to-talk</span>
+  <div class="header">
+    <h1>JARVIS</h1>
+    <p class="subtitle">Real-time Voice Assistant</p>
+    <p class="instructions">Wake: "Jarvis" | Interrupt: "Stop", "Cancel", "Wait"</p>
   </div>
 
-  <div class="status">
-    <div class="status-dot" id="statusDot"></div>
-    <span id="statusText">Disconnected</span>
-  </div>
+  <div class="main-container">
+    <div class="controls-panel">
+      <div class="controls-header">
+        <div class="mode-toggle">
+          <label class="toggle-switch">
+            <input type="checkbox" id="alwaysListenToggle">
+            <span class="toggle-slider"></span>
+          </label>
+          <span id="modeLabel">Push-to-talk</span>
+        </div>
 
-  <div class="activity-panel" id="activityPanel">
-    <div class="activity-indicator listening" id="activityListening">🎤 Listening</div>
-    <div class="activity-indicator thinking" id="activityThinking">💭 Thinking</div>
-    <div class="activity-indicator speaking" id="activitySpeaking">🔊 Speaking</div>
-  </div>
+        <div class="status">
+          <div class="status-dot" id="statusDot"></div>
+          <span id="statusText">Disconnected</span>
+        </div>
+      </div>
 
-  <button class="voice-button" id="voiceBtn">🎤</button>
-  <div class="wake-indicator" id="wakeIndicator">🎯 Wake word detected!</div>
-  <div class="state-label" id="stateLabel">Press to speak</div>
+      <div class="activity-panel" id="activityPanel">
+        <div class="activity-indicator listening" id="activityListening">🎤 Listening</div>
+        <div class="activity-indicator thinking" id="activityThinking">💭 Thinking</div>
+        <div class="activity-indicator speaking" id="activitySpeaking">🔊 Speaking</div>
+      </div>
+
+      <div class="voice-control">
+        <button class="voice-button" id="voiceBtn">🎤</button>
+        <div class="wake-indicator" id="wakeIndicator">🎯 Wake word detected!</div>
+        <div class="state-label" id="stateLabel">Press to speak</div>
+      </div>
+
+      <div class="transcript" id="transcript"></div>
+    </div>
+
+    <div class="conversation-panel">
+      <div class="conversation-header">
+        <div class="conversation-title">Conversation History</div>
+        <button class="clear-history-btn" id="clearHistoryBtn">Clear History</button>
+      </div>
+      <div class="conversation" id="conversation">
+        <div class="empty-history">No messages yet. Start a conversation!</div>
+      </div>
+    </div>
+  </div>
 
   <div class="error-banner" id="errorBanner">
     <div class="error-message"></div>
     <div class="error-code"></div>
   </div>
-
-  <div class="conversation-header">
-    <div class="conversation-title">Conversation History</div>
-    <button class="clear-history-btn" id="clearHistoryBtn">Clear History</button>
-  </div>
-  <div class="conversation" id="conversation">
-    <div class="empty-history">No messages yet. Start a conversation!</div>
-  </div>
-
-  <div class="transcript" id="transcript"></div>
 
   <button class="interrupt-btn" id="interruptBtn">⏹ Interrupt</button>
 
