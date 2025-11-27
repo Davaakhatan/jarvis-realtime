@@ -389,9 +389,21 @@
       currentAssistantMessage = '';
     }
 
+    let recordingAnalyser = null;
+    let recordingStream = null;
+    let recordingReady = false;
+    let pendingStop = false;
+
     async function startRecording() {
+      // Set isRecording immediately to prevent race conditions
+      isRecording = true;
+      recordingReady = false;
+      pendingStop = false;
+      voiceBtn.className = 'voice-button recording';
+      stateLabel.textContent = 'Starting...';
+
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
+        recordingStream = await navigator.mediaDevices.getUserMedia({
           audio: {
             sampleRate: 16000,
             channelCount: 1,
@@ -400,12 +412,24 @@
           }
         });
 
+        // Check if stop was requested while waiting for mic permission
+        if (pendingStop) {
+          cleanupRecording();
+          return;
+        }
+
         audioContext = new AudioContext({ sampleRate: 16000 });
-        const source = audioContext.createMediaStreamSource(stream);
+        const source = audioContext.createMediaStreamSource(recordingStream);
         const processor = audioContext.createScriptProcessor(4096, 1, 1);
 
+        // Create analyser for silence detection
+        recordingAnalyser = audioContext.createAnalyser();
+        recordingAnalyser.fftSize = 512;
+        recordingAnalyser.smoothingTimeConstant = 0.5;
+        source.connect(recordingAnalyser);
+
         processor.onaudioprocess = (e) => {
-          if (!isRecording) return;
+          if (!isRecording || !recordingReady) return;
 
           const inputData = e.inputBuffer.getChannelData(0);
           const pcmData = new Int16Array(inputData.length);
@@ -422,40 +446,63 @@
         source.connect(processor);
         processor.connect(audioContext.destination);
 
-        isRecording = true;
-        voiceBtn.className = 'voice-button recording';
+        recordingReady = true;
         stateLabel.textContent = 'Listening...';
+
+        // Check again if stop was requested while setting up
+        if (pendingStop) {
+          stopRecording();
+        }
 
       } catch (err) {
         console.error('Error accessing microphone:', err);
+        isRecording = false;
+        recordingReady = false;
+        voiceBtn.className = 'voice-button';
         stateLabel.textContent = 'Microphone access denied';
       }
     }
 
-    function stopRecording() {
+    function cleanupRecording() {
       isRecording = false;
+      recordingReady = false;
+      recordingAnalyser = null;
+
+      if (recordingStream) {
+        recordingStream.getTracks().forEach(track => track.stop());
+        recordingStream = null;
+      }
 
       if (audioContext) {
         audioContext.close();
         audioContext = null;
       }
 
-      voiceBtn.className = 'voice-button processing';
-      stateLabel.textContent = 'Processing...';
+      voiceBtn.className = 'voice-button';
+      stateLabel.textContent = 'Press to speak';
+    }
 
-      // Send end of audio signal
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'audio.end' }));
+    function stopRecording() {
+      // If recording not ready yet, set flag to stop when ready
+      if (!recordingReady && isRecording) {
+        pendingStop = true;
+        return;
       }
 
-      // Resume passive listening after a delay if in always-listening mode
-      if (alwaysListening) {
-        setTimeout(() => {
-          if (alwaysListening && !isRecording) {
-            startPassiveListening();
-          }
-        }, 1000);
+      const hadAudio = recordingReady;
+      cleanupRecording();
+
+      // Only show processing and send audio.end if we actually recorded something
+      if (hadAudio) {
+        voiceBtn.className = 'voice-button processing';
+        stateLabel.textContent = 'Processing...';
+
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'audio.end' }));
+        }
       }
+
+      // Don't restart passive listening here - wait for tts.end event
     }
 
     function playAudio(base64Audio) {
@@ -504,142 +551,152 @@
       }
     });
 
-    // Always-listening mode with wake word detection
+    // Voice Activity Detection (VAD) - works offline
+    let vadContext = null;
+    let vadStream = null;
+    let vadAnalyser = null;
+    let silenceTimeout = null;
+    let speechStartTime = null;
+    let lastTriggerTime = 0;
+    const SILENCE_THRESHOLD = 30; // Audio level threshold (higher = less sensitive)
+    const SILENCE_DURATION = 1500; // ms of silence before stopping
+    const MIN_SPEECH_DURATION = 500; // ms minimum to count as speech
+    const TRIGGER_COOLDOWN = 3000; // ms cooldown between triggers
+
     function startPassiveListening() {
-      if (speechRecognition) {
-        speechRecognition.stop();
-      }
+      // Stop any existing VAD
+      stopPassiveListening();
 
-      // Use Web Speech API for wake word detection (lightweight)
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SpeechRecognition) {
-        console.warn('Speech Recognition not supported');
-        stateLabel.textContent = 'Wake word not supported in this browser';
-        return;
-      }
-
-      speechRecognition = new SpeechRecognition();
-      speechRecognition.continuous = true;
-      speechRecognition.interimResults = true;
-      speechRecognition.lang = 'en-US';
-
-      speechRecognition.onresult = (event) => {
-        const last = event.results.length - 1;
-        const transcript = event.results[last][0].transcript.toLowerCase();
-
-        // Check for wake words
-        const wakeWords = ['jarvis', 'hey jarvis', 'ok jarvis', 'hey travis', 'travis'];
-        const hasWakeWord = wakeWords.some(word => transcript.includes(word));
-
-        if (hasWakeWord && !isRecording) {
-          console.log('Wake word detected:', transcript);
-          onWakeWordDetected(transcript);
+      navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true
         }
+      }).then(stream => {
+        vadStream = stream;
+        vadContext = new AudioContext();
+        const source = vadContext.createMediaStreamSource(stream);
+        vadAnalyser = vadContext.createAnalyser();
+        vadAnalyser.fftSize = 512;
+        vadAnalyser.smoothingTimeConstant = 0.5;
+        source.connect(vadAnalyser);
 
-        // Check for interrupt words during response
-        const interruptWords = ['stop', 'cancel', 'wait', 'hold on', 'pause', 'never mind'];
-        const hasInterrupt = interruptWords.some(word => transcript.includes(word));
-
-        if (hasInterrupt && interruptBtn.classList.contains('visible')) {
-          console.log('Interrupt word detected:', transcript);
-          if (ws && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'interrupt' }));
-          }
-        }
-      };
-
-      speechRecognition.onerror = (event) => {
-        console.error('Speech recognition error:', event.error);
-        if (event.error === 'not-allowed') {
-          stateLabel.textContent = 'Microphone access denied';
-          alwaysListenToggle.checked = false;
-          alwaysListening = false;
-          modeLabel.textContent = 'Push-to-talk';
-        }
-      };
-
-      speechRecognition.onend = () => {
-        // Restart if still in always-listening mode
-        if (alwaysListening && !isRecording) {
-          setTimeout(() => {
-            if (alwaysListening && !isRecording) {
-              speechRecognition.start();
-            }
-          }, 100);
-        }
-      };
-
-      try {
-        speechRecognition.start();
         voiceBtn.className = 'voice-button listening-passive';
-        stateLabel.textContent = 'Listening for "Jarvis"...';
-        console.log('Passive listening started');
-      } catch (err) {
-        console.error('Failed to start speech recognition:', err);
+        stateLabel.textContent = 'Listening... (speak to activate)';
+
+        // Start monitoring audio levels
+        monitorAudioLevel();
+      }).catch(err => {
+        console.error('Failed to start VAD:', err);
+        stateLabel.textContent = 'Microphone access denied';
+        alwaysListenToggle.checked = false;
+        alwaysListening = false;
+        modeLabel.textContent = 'Push-to-talk';
+      });
+    }
+
+    function monitorAudioLevel() {
+      if (!vadAnalyser || !alwaysListening) return;
+
+      const dataArray = new Uint8Array(vadAnalyser.frequencyBinCount);
+      vadAnalyser.getByteFrequencyData(dataArray);
+
+      // Calculate average audio level
+      const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+
+      const now = Date.now();
+      if (average > SILENCE_THRESHOLD && !isRecording && (now - lastTriggerTime) > TRIGGER_COOLDOWN) {
+        // Speech detected - start recording
+        lastTriggerTime = now;
+        onSpeechDetected();
+      }
+
+      // Continue monitoring if still in always-listening mode and not recording
+      if (alwaysListening && !isRecording) {
+        requestAnimationFrame(monitorAudioLevel);
       }
     }
 
-    function stopPassiveListening() {
-      if (speechRecognition) {
-        speechRecognition.stop();
-        speechRecognition = null;
-      }
-      if (!isRecording) {
-        voiceBtn.className = 'voice-button';
-        stateLabel.textContent = 'Press to speak';
-      }
-    }
-
-    function onWakeWordDetected(transcript) {
+    async function onSpeechDetected() {
       // Show indicator
+      wakeIndicator.textContent = '🎙️ Voice detected!';
       wakeIndicator.classList.add('visible');
       clearTimeout(wakeWordTimeout);
       wakeWordTimeout = setTimeout(() => {
         wakeIndicator.classList.remove('visible');
-      }, 2000);
+        wakeIndicator.textContent = '🎯 Wake word detected!';
+      }, 1500);
 
-      // Stop passive listening temporarily
-      if (speechRecognition) {
-        speechRecognition.stop();
+      // Stop VAD temporarily
+      if (vadContext) {
+        vadContext.close();
+        vadContext = null;
+      }
+      if (vadStream) {
+        vadStream.getTracks().forEach(track => track.stop());
+        vadStream = null;
       }
 
-      // Extract command after wake word (if any)
-      let command = transcript;
-      const wakeWords = ['hey jarvis', 'ok jarvis', 'jarvis', 'hey travis', 'travis'];
-      for (const word of wakeWords) {
-        const idx = command.indexOf(word);
-        if (idx !== -1) {
-          command = command.substring(idx + word.length).trim();
-          break;
+      // Start active recording and wait for it to be ready
+      await startRecording();
+      speechStartTime = Date.now();
+
+      // Start silence detection for auto-stop (now recordingAnalyser is ready)
+      startSilenceDetection();
+    }
+
+    function startSilenceDetection() {
+      if (!recordingAnalyser || !isRecording || !recordingReady) return;
+
+      let lastSpeechTime = Date.now();
+
+      function checkSilence() {
+        if (!isRecording || !alwaysListening || !recordingAnalyser || !recordingReady) return;
+
+        const dataArray = new Uint8Array(recordingAnalyser.frequencyBinCount);
+        recordingAnalyser.getByteFrequencyData(dataArray);
+        const average = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+
+        if (average > SILENCE_THRESHOLD) {
+          lastSpeechTime = Date.now();
         }
+
+        const silenceDuration = Date.now() - lastSpeechTime;
+        const totalDuration = Date.now() - speechStartTime;
+
+        // Stop if silence detected after minimum speech duration
+        if (silenceDuration > SILENCE_DURATION && totalDuration > MIN_SPEECH_DURATION) {
+          stopRecording();
+          return;
+        }
+
+        // Max recording time of 30 seconds
+        if (totalDuration > 30000) {
+          stopRecording();
+          return;
+        }
+
+        requestAnimationFrame(checkSilence);
       }
 
-      // If there's a command after the wake word, send it directly
-      if (command.length > 3) {
-        console.log('Command after wake word:', command);
-        addMessage('user', command);
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'transcript', text: command, isFinal: true }));
-        }
-        voiceBtn.className = 'voice-button processing';
-        stateLabel.textContent = 'Processing...';
+      // Start silence checking after a short delay
+      setTimeout(checkSilence, 500);
+    }
 
-        // Resume passive listening after a delay
-        setTimeout(() => {
-          if (alwaysListening && !isRecording) {
-            startPassiveListening();
-          }
-        }, 1000);
-      } else {
-        // No command, start active recording
-        startRecording();
+    function stopPassiveListening() {
+      if (vadContext) {
+        vadContext.close();
+        vadContext = null;
+      }
+      if (vadStream) {
+        vadStream.getTracks().forEach(track => track.stop());
+        vadStream = null;
+      }
+      vadAnalyser = null;
 
-        // Auto-stop after silence (5 seconds)
-        setTimeout(() => {
-          if (isRecording) {
-            stopRecording();
-          }
-        }, 5000);
+      if (!isRecording) {
+        voiceBtn.className = 'voice-button';
+        stateLabel.textContent = 'Press to speak';
       }
     }
 
