@@ -12,6 +12,7 @@ export const EventTypeSchema = z.enum([
   'tts.start',
   'tts.chunk',
   'tts.end',
+  'tts.stop',
   'session.state_change',
   'session.interrupt',
   'error',
@@ -64,7 +65,7 @@ export const LLMEventSchema = BaseEventSchema.extend({
 export type LLMEvent = z.infer<typeof LLMEventSchema>;
 
 export const TTSEventSchema = BaseEventSchema.extend({
-  type: z.enum(['tts.start', 'tts.chunk', 'tts.end']),
+  type: z.enum(['tts.start', 'tts.chunk', 'tts.end', 'tts.stop']),
   payload: z.object({
     audio: z.instanceof(Buffer).optional(),
   }),

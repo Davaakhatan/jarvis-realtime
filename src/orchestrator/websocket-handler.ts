@@ -1,7 +1,11 @@
 import { WebSocket, WebSocketServer } from 'ws';
 import { IncomingMessage } from 'http';
 import { v4 as uuidv4 } from 'uuid';
-import { createChildLogger } from '../shared/utils/index';
+import {
+  createChildLogger,
+  withCorrelationId,
+  generateCorrelationId,
+} from '../shared/utils/index';
 import { SessionManager } from './session-manager';
 import { Pipeline } from './pipeline';
 
@@ -11,6 +15,7 @@ interface ClientConnection {
   ws: WebSocket;
   sessionId: string;
   userId: string;
+  correlationId: string;
 }
 
 export class WebSocketHandler {
@@ -46,28 +51,40 @@ export class WebSocketHandler {
   private handleConnection(ws: WebSocket, req: IncomingMessage): void {
     // Extract userId from query params or headers
     const userId = this.extractUserId(req) || uuidv4();
+    const correlationId = generateCorrelationId();
     const session = this.sessionManager.createSession(userId);
 
     const connection: ClientConnection = {
       ws,
       sessionId: session.id,
       userId,
+      correlationId,
     };
 
     this.connections.set(session.id, connection);
 
-    logger.info({ sessionId: session.id, userId }, 'Client connected');
+    // Log with correlation ID
+    withCorrelationId(correlationId, () => {
+      logger.info({ sessionId: session.id, userId }, 'Client connected');
+    });
 
     ws.on('message', (data: Buffer) => {
-      this.handleMessage(session.id, data);
+      // Wrap message handling with correlation ID context
+      withCorrelationId(correlationId, () => {
+        this.handleMessage(session.id, data);
+      });
     });
 
     ws.on('close', () => {
-      this.handleDisconnect(session.id);
+      withCorrelationId(correlationId, () => {
+        this.handleDisconnect(session.id);
+      });
     });
 
     ws.on('error', (error) => {
-      logger.error({ sessionId: session.id, error }, 'WebSocket error');
+      withCorrelationId(correlationId, () => {
+        logger.error({ sessionId: session.id, error }, 'WebSocket error');
+      });
     });
 
     // Send session info to client
@@ -75,6 +92,7 @@ export class WebSocketHandler {
       type: 'session.created',
       sessionId: session.id,
       conversationId: session.conversationId,
+      correlationId,
     });
   }
 

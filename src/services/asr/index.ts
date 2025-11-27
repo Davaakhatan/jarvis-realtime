@@ -1,5 +1,12 @@
 import { EventEmitter } from 'events';
 import { createChildLogger } from '../../shared/utils/index';
+import {
+  withRetry,
+  RetryableError,
+  withTimeout,
+  RateLimiter,
+  CircuitBreaker,
+} from '../../shared/utils/retry';
 
 const logger = createChildLogger('asr-service');
 
@@ -22,6 +29,8 @@ export class ASRService extends EventEmitter {
   private audioBuffer: Buffer[] = [];
   private isProcessing = false;
   private processingInterval: ReturnType<typeof setInterval> | null = null;
+  private rateLimiter: RateLimiter;
+  private circuitBreaker: CircuitBreaker;
 
   constructor(config: ASRConfig) {
     super();
@@ -31,6 +40,15 @@ export class ASRService extends EventEmitter {
       sampleRate: 16000,
       ...config,
     };
+
+    // Rate limit: 50 requests per minute for Whisper API
+    this.rateLimiter = new RateLimiter(50, 60000, 10);
+
+    // Circuit breaker: open after 5 failures, reset after 30 seconds
+    this.circuitBreaker = new CircuitBreaker({
+      failureThreshold: 5,
+      resetTimeoutMs: 30000,
+    });
   }
 
   start(): void {
@@ -87,44 +105,71 @@ export class ASRService extends EventEmitter {
 
   private async transcribe(audioData: Buffer): Promise<TranscriptResult | null> {
     try {
-      // Convert raw PCM to WAV format for Whisper API
-      const wavBuffer = this.pcmToWav(audioData);
+      // Apply rate limiting
+      await this.rateLimiter.acquire();
 
-      const formData = new FormData();
-      formData.append(
-        'file',
-        new Blob([wavBuffer], { type: 'audio/wav' }),
-        'audio.wav'
-      );
-      formData.append('model', this.config.model!);
-      formData.append('language', this.config.language!);
-      formData.append('response_format', 'json');
+      // Use circuit breaker and retry logic
+      return await this.circuitBreaker.execute(() =>
+        withRetry(
+          async () => {
+            // Convert raw PCM to WAV format for Whisper API
+            const wavBuffer = this.pcmToWav(audioData);
 
-      const response = await fetch(
-        'https://api.openai.com/v1/audio/transcriptions',
-        {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${this.config.apiKey}`,
+            const formData = new FormData();
+            formData.append(
+              'file',
+              new Blob([wavBuffer], { type: 'audio/wav' }),
+              'audio.wav'
+            );
+            formData.append('model', this.config.model!);
+            formData.append('language', this.config.language!);
+            formData.append('response_format', 'json');
+
+            const response = await withTimeout(
+              fetch('https://api.openai.com/v1/audio/transcriptions', {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${this.config.apiKey}`,
+                },
+                body: formData,
+              }),
+              30000 // 30 second timeout
+            );
+
+            if (!response.ok) {
+              const error = await response.text();
+              // Retry on 5xx errors and rate limits
+              if (response.status >= 500 || response.status === 429) {
+                throw new RetryableError(`Whisper API error: ${error}`);
+              }
+              throw new Error(`Whisper API error: ${error}`);
+            }
+
+            const result = (await response.json()) as { text: string };
+
+            return {
+              text: result.text,
+              isFinal: true,
+              timestamp: new Date(),
+            };
           },
-          body: formData,
-        }
+          {
+            maxAttempts: 3,
+            initialDelayMs: 1000,
+            maxDelayMs: 5000,
+            retryableErrors: [RetryableError],
+            onRetry: (error, attempt) => {
+              logger.warn(
+                { error: error.message, attempt },
+                'Retrying transcription'
+              );
+            },
+          }
+        )
       );
-
-      if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`Whisper API error: ${error}`);
-      }
-
-      const result = (await response.json()) as { text: string };
-
-      return {
-        text: result.text,
-        isFinal: true,
-        timestamp: new Date(),
-      };
     } catch (error) {
-      logger.error({ error }, 'Transcription failed');
+      logger.error({ error }, 'Transcription failed after retries');
+      this.emit('error', error);
       return null;
     }
   }

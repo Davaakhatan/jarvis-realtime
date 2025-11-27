@@ -86,6 +86,14 @@
       margin-bottom: 2rem;
       text-transform: uppercase;
       letter-spacing: 2px;
+      transition: color 0.3s, transform 0.2s;
+    }
+    .state-label.active {
+      color: #00d4ff;
+      transform: scale(1.05);
+    }
+    .state-label.error {
+      color: #ff4444;
     }
     .conversation {
       width: 100%;
@@ -207,10 +215,77 @@
       margin-top: -1rem;
       margin-bottom: 1rem;
       opacity: 0;
-      transition: opacity 0.3s;
+      transition: opacity 0.3s, transform 0.3s;
+      transform: translateY(-10px);
     }
     .wake-indicator.visible {
       opacity: 1;
+      transform: translateY(0);
+    }
+    .wake-indicator.interrupt {
+      color: #ff4444;
+      animation: shake 0.5s;
+    }
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      25% { transform: translateX(-10px); }
+      75% { transform: translateX(10px); }
+    }
+    .activity-panel {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .activity-indicator {
+      padding: 0.4rem 0.8rem;
+      background: #1a1a2e;
+      border-radius: 12px;
+      font-size: 0.75rem;
+      color: #666;
+      border: 1px solid transparent;
+      transition: all 0.3s;
+      opacity: 0.5;
+    }
+    .activity-indicator.active {
+      opacity: 1;
+      border-color: currentColor;
+    }
+    .activity-indicator.listening {
+      color: #ff4444;
+    }
+    .activity-indicator.processing {
+      color: #ffaa00;
+    }
+    .activity-indicator.speaking {
+      color: #44ff44;
+    }
+    .activity-indicator.thinking {
+      color: #00d4ff;
+    }
+    .error-banner {
+      position: fixed;
+      top: 2rem;
+      left: 50%;
+      transform: translateX(-50%) translateY(-150%);
+      background: linear-gradient(145deg, #ff4444, #cc0000);
+      color: white;
+      padding: 1rem 2rem;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(255, 68, 68, 0.5);
+      z-index: 1000;
+      transition: transform 0.4s;
+      max-width: 80%;
+      text-align: center;
+    }
+    .error-banner.visible {
+      transform: translateX(-50%) translateY(0);
+    }
+    .error-banner .error-code {
+      font-size: 0.7rem;
+      opacity: 0.8;
+      margin-top: 0.25rem;
     }
   </style>
 </head>
@@ -232,9 +307,20 @@
     <span id="statusText">Disconnected</span>
   </div>
 
+  <div class="activity-panel" id="activityPanel">
+    <div class="activity-indicator listening" id="activityListening">🎤 Listening</div>
+    <div class="activity-indicator thinking" id="activityThinking">💭 Thinking</div>
+    <div class="activity-indicator speaking" id="activitySpeaking">🔊 Speaking</div>
+  </div>
+
   <button class="voice-button" id="voiceBtn">🎤</button>
   <div class="wake-indicator" id="wakeIndicator">🎯 Wake word detected!</div>
   <div class="state-label" id="stateLabel">Press to speak</div>
+
+  <div class="error-banner" id="errorBanner">
+    <div class="error-message"></div>
+    <div class="error-code"></div>
+  </div>
 
   <div class="conversation" id="conversation"></div>
 
@@ -265,9 +351,34 @@
     const alwaysListenToggle = document.getElementById('alwaysListenToggle');
     const modeLabel = document.getElementById('modeLabel');
     const wakeIndicator = document.getElementById('wakeIndicator');
+    const activityListening = document.getElementById('activityListening');
+    const activityThinking = document.getElementById('activityThinking');
+    const activitySpeaking = document.getElementById('activitySpeaking');
+    const errorBanner = document.getElementById('errorBanner');
 
     let reconnectAttempts = 0;
     const MAX_RECONNECT_DELAY = 30000;
+    let errorBannerTimeout = null;
+
+    // Activity indicator helpers
+    function setActivityState(listening = false, thinking = false, speaking = false) {
+      activityListening.classList.toggle('active', listening);
+      activityThinking.classList.toggle('active', thinking);
+      activitySpeaking.classList.toggle('active', speaking);
+    }
+
+    // Error display helper
+    function showError(message, code = '') {
+      const banner = errorBanner;
+      banner.querySelector('.error-message').textContent = message;
+      banner.querySelector('.error-code').textContent = code ? `Error: ${code}` : '';
+      banner.classList.add('visible');
+
+      clearTimeout(errorBannerTimeout);
+      errorBannerTimeout = setTimeout(() => {
+        banner.classList.remove('visible');
+      }, 5000);
+    }
 
     function connect() {
       ws = new WebSocket(WS_URL);
@@ -327,6 +438,15 @@
         case 'transcript.final':
           transcript.textContent = '';
           addMessage('user', data.payload?.text || '');
+          setActivityState(false, true, false);
+          stateLabel.textContent = 'Thinking...';
+          stateLabel.classList.add('active');
+          break;
+
+        case 'llm.start':
+          setActivityState(false, true, false);
+          stateLabel.textContent = 'Generating response...';
+          stateLabel.classList.add('active');
           break;
 
         case 'llm.chunk':
@@ -335,11 +455,15 @@
 
         case 'llm.end':
           finalizeAssistantMessage();
+          setActivityState(false, false, false);
+          stateLabel.classList.remove('active');
           break;
 
         case 'tts.start':
           voiceBtn.className = 'voice-button speaking';
           stateLabel.textContent = 'Speaking... (speak to interrupt)';
+          stateLabel.classList.add('active');
+          setActivityState(false, false, true);
           interruptBtn.classList.add('visible');
           audioChunksReceived = 0; // Reset chunk counter
           isTTSSpeaking = true;
@@ -357,8 +481,25 @@
           }
           break;
 
+        case 'tts.stop':
+          // Immediately stop TTS playback (before interrupt)
+          stopPlayback();
+          interruptBtn.classList.remove('visible');
+          setActivityState(false, false, false);
+          stateLabel.classList.remove('active');
+          // Show interrupt feedback
+          wakeIndicator.textContent = '⏹ Audio stopped';
+          wakeIndicator.classList.add('visible', 'interrupt');
+          clearTimeout(wakeWordTimeout);
+          wakeWordTimeout = setTimeout(() => {
+            wakeIndicator.classList.remove('visible', 'interrupt');
+          }, 1500);
+          break;
+
         case 'tts.end':
           interruptBtn.classList.remove('visible');
+          stateLabel.classList.remove('active');
+          setActivityState(false, false, false);
           // Wait for audio to finish before resuming listening
           const checkAudioDone = () => {
             if (!isPlaying) {
@@ -379,6 +520,8 @@
 
         case 'session.interrupt':
           interruptBtn.classList.remove('visible');
+          stateLabel.classList.remove('active');
+          setActivityState(false, false, false);
           stopPlayback(); // Stop any playing audio
           if (alwaysListening) {
             startPassiveListening();
@@ -394,7 +537,20 @@
 
         case 'error':
           console.error('Error:', data.payload);
-          stateLabel.textContent = 'Error: ' + (data.payload?.message || 'Unknown');
+          const errorMsg = data.payload?.message || 'Unknown error occurred';
+          const errorCode = data.payload?.code || '';
+          stateLabel.textContent = 'Error occurred';
+          stateLabel.classList.add('error');
+          setActivityState(false, false, false);
+          showError(errorMsg, errorCode);
+          setTimeout(() => {
+            stateLabel.classList.remove('error');
+            if (alwaysListening) {
+              startPassiveListening();
+            } else {
+              stateLabel.textContent = 'Press to speak';
+            }
+          }, 3000);
           break;
       }
     }
@@ -438,6 +594,8 @@
       pendingStop = false;
       voiceBtn.className = 'voice-button recording';
       stateLabel.textContent = 'Starting...';
+      stateLabel.classList.add('active');
+      setActivityState(true, false, false);
 
       try {
         recordingStream = await navigator.mediaDevices.getUserMedia({
@@ -485,6 +643,8 @@
 
         recordingReady = true;
         stateLabel.textContent = 'Listening...';
+        stateLabel.classList.add('active');
+        setActivityState(true, false, false);
 
         // Check again if stop was requested while setting up
         if (pendingStop) {
@@ -497,6 +657,13 @@
         recordingReady = false;
         voiceBtn.className = 'voice-button';
         stateLabel.textContent = 'Microphone access denied';
+        stateLabel.classList.add('error');
+        setActivityState(false, false, false);
+        showError('Microphone access denied. Please allow microphone access.', 'MIC_DENIED');
+        setTimeout(() => {
+          stateLabel.classList.remove('error');
+          stateLabel.textContent = 'Press to speak';
+        }, 3000);
       }
     }
 
@@ -517,6 +684,8 @@
 
       voiceBtn.className = 'voice-button';
       stateLabel.textContent = 'Press to speak';
+      stateLabel.classList.remove('active');
+      setActivityState(false, false, false);
     }
 
     function stopRecording() {
@@ -533,6 +702,8 @@
       if (hadAudio) {
         voiceBtn.className = 'voice-button processing';
         stateLabel.textContent = 'Processing...';
+        stateLabel.classList.add('active');
+        setActivityState(false, true, false);
 
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'audio.end' }));
@@ -568,6 +739,12 @@
     }
 
     async function playAudio(audioData) {
+      // Block audio if interrupted
+      if (isInterrupted) {
+        console.log('Audio blocked - currently interrupted');
+        return;
+      }
+
       // audioData comes as { type: 'Buffer', data: [...] } from JSON-stringified Buffer
       if (!audioData || !audioData.data) {
         console.warn('Invalid audio data received');
@@ -585,8 +762,20 @@
       try {
         const ctx = await initPlaybackContext();
 
+        // Check again after await in case interrupted during context init
+        if (isInterrupted) {
+          console.log('Audio blocked after context init - interrupted');
+          return;
+        }
+
         // Decode MP3 using browser's built-in decoder - produces clean audio
         const audioBuffer = await ctx.decodeAudioData(byteArray.buffer.slice(0));
+
+        // Check again after decode in case interrupted during decoding
+        if (isInterrupted) {
+          console.log('Audio blocked after decode - interrupted');
+          return;
+        }
 
         console.log('Audio decoded:', {
           duration: audioBuffer.duration.toFixed(2) + 's',
@@ -613,24 +802,42 @@
       }
     }
 
+    let isInterrupted = false; // Flag to block new audio during interrupt
+
     function stopPlayback() {
+      console.log('stopPlayback called - stopping audio immediately');
+      isInterrupted = true; // Block any new audio chunks
       isPlaying = false;
       isTTSSpeaking = false;
       stopInterruptVAD();
 
+      // First stop the source node - this immediately stops audio
       if (currentSource) {
         try {
-          currentSource.stop();
+          currentSource.disconnect(); // Disconnect from destination first
+          currentSource.stop(0); // Stop immediately
+          console.log('Audio source stopped');
         } catch (e) {
-          // Already stopped
+          console.log('Source already stopped or error:', e.message);
         }
         currentSource = null;
       }
 
+      // Then close the context
       if (playbackContext && playbackContext.state !== 'closed') {
-        playbackContext.close();
+        try {
+          playbackContext.close();
+          console.log('Playback context closed');
+        } catch (e) {
+          console.log('Context close error:', e.message);
+        }
         playbackContext = null;
       }
+
+      // Reset interrupt flag after a short delay to allow new audio
+      setTimeout(() => {
+        isInterrupted = false;
+      }, 100);
     }
 
     // Start listening for voice interrupt during TTS playback
@@ -705,10 +912,10 @@
 
       // Show feedback
       wakeIndicator.textContent = '🛑 Interrupted! Listening...';
-      wakeIndicator.classList.add('visible');
+      wakeIndicator.classList.add('visible', 'interrupt');
       clearTimeout(wakeWordTimeout);
       wakeWordTimeout = setTimeout(() => {
-        wakeIndicator.classList.remove('visible');
+        wakeIndicator.classList.remove('visible', 'interrupt');
       }, 1500);
 
       // Start recording for the new question

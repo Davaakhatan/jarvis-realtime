@@ -87,11 +87,14 @@ export class Pipeline extends EventEmitter {
     const verification = new VerificationClient({
       serviceUrl: config.verificationServiceUrl || 'http://localhost:8003',
       enabled: this.options.verificationEnabled ?? true,
+      useBuiltInEngine: true,
+      apiKey: this.options.openaiApiKey,
+      useLLMVerification: false, // Use rule-based for low latency
     });
 
     const vectorStore = new VectorStoreClient({
       serviceUrl: config.vectorStoreServiceUrl || 'http://localhost:8004',
-      enabled: true,
+      enabled: false, // Disabled - vector store service not running
     });
 
     const wakeWord = new WakeWordService({
@@ -433,11 +436,20 @@ export class Pipeline extends EventEmitter {
         // Verify the response before proceeding
         let verifiedResponse = fullResponse;
         try {
+          // Pass conversation history and API data for verification
+          const conversationHistoryForVerification = history.map((m) => ({
+            role: m.role,
+            content: m.content,
+          }));
+
           const verificationResult = await this.services.verification.verify({
             sessionId,
             responseText: fullResponse,
             claimedSources: [],
-            context: { apiData: apiContext },
+            context: {
+              apiData: apiContext,
+              conversationHistory: conversationHistoryForVerification,
+            },
           });
 
           if (!verificationResult.verified) {
@@ -605,8 +617,22 @@ export class Pipeline extends EventEmitter {
   }
 
   interrupt(sessionId: string): void {
+    const session = this.sessionManager.getSession(sessionId);
+    const wasPlaying = session?.state === 'speaking';
+
     const interrupted = this.sessionManager.interrupt(sessionId);
     if (interrupted) {
+      // If we were speaking, emit tts.stop first to tell client to stop audio immediately
+      if (wasPlaying) {
+        this.emit('event', {
+          id: uuidv4(),
+          sessionId,
+          type: 'tts.stop',
+          timestamp: new Date(),
+          payload: {},
+        } as unknown as PipelineEvent);
+      }
+
       this.emit('event', {
         id: uuidv4(),
         sessionId,
