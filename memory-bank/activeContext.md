@@ -1,34 +1,52 @@
-## Active Context
+# Active Context
 
-### Current Focus
+## Current Focus
 
-- Memory bank fully updated with comprehensive PRD from Frontier Audio
-- Project documentation aligned with official requirements document
-- Ready for implementation phase kickoff
+- Project scaffold complete and pushed to GitHub
+- Continuing development of core services
+- Next: ASR, TTS, and LLM integrations
 
-### Recent Decisions
+## Recent Decisions
 
-- Documented complete PRD with executive summary, problem statement, and success metrics
-- Captured all three user personas (Frontline Workers, Team Leaders, IT Managers) with detailed user stories
-- Established functional requirements hierarchy (P0/P1/P2)
-- Defined technical stack: TypeScript + Python, AWS infrastructure, frontier LLMs
-- Confirmed non-functional requirements: ≤500ms latency, E2E encryption, GDPR compliance
+- TypeScript for orchestrator with Express + WebSocket
+- Python FastAPI for AI/ML services (verification, vector-store)
+- Zod for runtime type validation
+- Pino for structured logging
+- Docker Compose for local development stack
 
-### Project Metadata
+## Project Metadata
 
 - **Organization:** Frontier Audio
 - **Project ID:** VyuiwBOFxfoySBVh4b7D_1762227805787
+- **Repository:** https://github.com/Davaakhatan/jarvis-realtime.git
+
+## Active Development
+
+### Completed This Session
+
+1. Project structure initialized
+2. TypeScript orchestrator with WebSocket real-time support
+3. Session management and pipeline architecture
+4. Python verification and vector-store services
+5. Docker and CI/CD configuration
+6. Initial commit pushed to GitHub
+
+### In Progress
+
+1. ASR service integration (speech-to-text)
+2. TTS service integration (text-to-speech)
+3. LLM integration with tool-use capabilities
 
 ### Next Steps
 
-1. **Repository Setup**: Establish private GitHub repo with CI/CD skeleton
-2. **Technical Spikes**: Investigate ASR/LLM vendor options for latency/security constraints
-3. **MVP Prioritization**: Align on which P0 requirements to tackle first
-4. **Architecture Validation**: Verify sub-500ms latency feasibility with streaming pipeline design
-5. **Zero-Hallucination Design**: Elaborate verification loop (RAG vs. rules-based approach)
+1. Add ASR client in orchestrator to connect to speech recognition
+2. Add TTS client for response audio synthesis
+3. Integrate LLM with streaming responses
+4. Implement GitHub integration for knowledge retrieval
+5. Build API poller for data freshness
 
-### Open Questions
+## Open Questions
 
-- Which ASR/LLM vendors best meet latency/security constraints?
-- How to implement automated verification for zero hallucinations?
-- What escalation path is needed when Jarvis cannot verify an answer?
+- Which ASR vendor to use? (Whisper, Deepgram, AssemblyAI)
+- Which TTS vendor? (ElevenLabs, OpenAI, AWS Polly)
+- LLM choice for tool-use? (GPT-4, Claude, open-source)

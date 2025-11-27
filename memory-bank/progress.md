@@ -1,80 +1,77 @@
-## Progress Log
+# Progress Log
 
-### Completed
+## Completed
 
-- ✅ Established initial memory bank structure
-- ✅ Updated memory bank with comprehensive PRD (2025-11-27)
-- ✅ **Project initialization complete** (2025-11-27)
-  - Git repository initialized
-  - TypeScript configuration (package.json, tsconfig.json)
-  - Project directory structure created
+- ✅ Memory bank established with comprehensive PRD
+- ✅ **Project scaffold complete** (2025-11-27)
+- ✅ **Initial commit pushed to GitHub**
+- ✅ **Core services implemented** (2025-11-27)
 
-### Code Implementation Started
+### TypeScript Orchestrator (`src/orchestrator/`)
 
-#### TypeScript Orchestrator (`src/orchestrator/`)
+| File | Status | Description |
+|------|--------|-------------|
+| `index.ts` | ✅ | Main entry point with Express + WebSocket servers |
+| `session-manager.ts` | ✅ | Session lifecycle management |
+| `pipeline.ts` | ✅ | Full pipeline with ASR, LLM, TTS integration |
+| `websocket-handler.ts` | ✅ | Real-time WebSocket communication |
 
-- ✅ `index.ts` - Main entry point with Express + WebSocket servers
-- ✅ `session-manager.ts` - Session lifecycle management
-- ✅ `pipeline.ts` - Audio processing pipeline with event emission
-- ✅ `websocket-handler.ts` - Real-time WebSocket communication
+### Services (`src/services/`)
 
-#### Shared Types (`src/shared/types/`)
+| Service | Status | Description |
+|---------|--------|-------------|
+| `asr/index.ts` | ✅ | OpenAI Whisper ASR integration |
+| `tts/index.ts` | ✅ | OpenAI TTS with streaming support |
+| `llm/index.ts` | ✅ | GPT-4 with tool-use and streaming |
+| `github-integration/index.ts` | ✅ | GitHub API for code/issue search |
+| `api-poller/index.ts` | ✅ | Auto-refresh API data every 3 min |
 
-- ✅ `conversation.ts` - Conversation, Message, Session schemas (Zod)
-- ✅ `events.ts` - Pipeline event types for streaming
+### Shared Code (`src/shared/`)
 
-#### Shared Utils (`src/shared/utils/`)
+| File | Status | Description |
+|------|--------|-------------|
+| `types/conversation.ts` | ✅ | Conversation, Message, Session schemas |
+| `types/events.ts` | ✅ | Pipeline event types |
+| `utils/config.ts` | ✅ | Environment configuration |
+| `utils/logger.ts` | ✅ | Pino logger setup |
 
-- ✅ `config.ts` - Environment configuration with Zod validation
-- ✅ `logger.ts` - Pino logger setup
+### Python Services
 
-#### Python Services
+| Service | Status | Description |
+|---------|--------|-------------|
+| `services/verification/` | ✅ Scaffold | Zero-hallucination verification |
+| `services/vector-store/` | ✅ Scaffold | Embedding storage |
 
-- ✅ `services/verification/` - Zero-hallucination verification service (FastAPI)
-- ✅ `services/vector-store/` - Embedding storage and semantic search (FastAPI)
+### Infrastructure
 
-#### Infrastructure
+| File | Status | Description |
+|------|--------|-------------|
+| `Dockerfile` | ✅ | Orchestrator container |
+| `docker-compose.yml` | ✅ | Full stack |
+| `.github/workflows/ci.yml` | ✅ | CI pipeline |
+| `.env.example` | ✅ | Environment template |
 
-- ✅ `Dockerfile` - Orchestrator container
-- ✅ `docker-compose.yml` - Full stack with Redis, PostgreSQL (pgvector)
-- ✅ `.github/workflows/ci.yml` - CI pipeline for lint, test, build
-- ✅ `.env.example` - Environment configuration template
-- ✅ `.gitignore` - Standard ignores
+## In Progress
 
-### In Progress
+- ⏳ Full verification logic implementation
+- ⏳ Vector store pgvector integration
 
-- ⏳ ASR service integration
-- ⏳ TTS service integration
-- ⏳ LLM integration with tool-use
+## Pending
 
-### Pending
-
-- 🚫 GitHub integration service
-- 🚫 API poller service
-- 🚫 Full verification logic implementation
-- 🚫 Vector store with pgvector implementation
 - 🚫 End-to-end testing
-- 🚫 Production deployment configuration
+- 🚫 Production deployment
+- 🚫 Mobile clients (P2)
 
-### Milestones
+## Milestones
 
-| Milestone | Status | Notes |
-|-----------|--------|-------|
-| Memory Bank Established | ✅ Complete | All context files populated |
-| PRD Documented | ✅ Complete | Full requirements captured |
-| Architecture Defined | ✅ Complete | See docs/architecture.md |
-| Project Scaffold | ✅ Complete | TypeScript + Python structure |
-| Orchestrator Core | ✅ Complete | Session, Pipeline, WebSocket |
-| Docker Setup | ✅ Complete | docker-compose with all services |
-| CI/CD Pipeline | ✅ Complete | GitHub Actions workflow |
-| Speech Pipeline | 🚫 Not Started | ASR + TTS integration needed |
-| LLM Integration | 🚫 Not Started | Tool-use implementation |
-| Verification System | ⏳ Partial | Scaffold ready, logic pending |
-
-### Next Steps
-
-1. Run `npm install` to install dependencies
-2. Run `docker-compose up` to start all services
-3. Implement ASR service integration
-4. Implement TTS service integration
-5. Add LLM integration with tool-use capabilities
+| Milestone | Status | Date |
+|-----------|--------|------|
+| Memory Bank | ✅ Complete | 2025-11-27 |
+| PRD Documented | ✅ Complete | 2025-11-27 |
+| Project Scaffold | ✅ Complete | 2025-11-27 |
+| GitHub Push | ✅ Complete | 2025-11-27 |
+| Speech Pipeline | ✅ Complete | 2025-11-27 |
+| LLM Integration | ✅ Complete | 2025-11-27 |
+| GitHub Integration | ✅ Complete | 2025-11-27 |
+| API Poller | ✅ Complete | 2025-11-27 |
+| Verification System | ⏳ Partial | - |

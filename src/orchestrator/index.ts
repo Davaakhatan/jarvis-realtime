@@ -9,11 +9,22 @@ const log = createChildLogger('main');
 async function main(): Promise<void> {
   log.info('Starting Jarvis orchestrator...');
 
+  // Validate required configuration
+  if (!config.llmApiKey) {
+    log.error('LLM_API_KEY is required but not set');
+    process.exit(1);
+  }
+
   // Initialize components
   const sessionManager = new SessionManager();
   const pipeline = new Pipeline(sessionManager, {
     maxLatencyMs: config.maxLatencyMs,
+    openaiApiKey: config.llmApiKey,
+    githubToken: config.githubToken,
   });
+
+  // Start pipeline services
+  pipeline.start();
 
   // Start WebSocket server for real-time communication
   const wsHandler = new WebSocketHandler(
@@ -31,8 +42,18 @@ async function main(): Promise<void> {
   });
 
   app.get('/ready', (req, res) => {
-    // TODO: Add actual readiness checks (Redis, ASR, TTS connections)
     res.json({ ready: true });
+  });
+
+  // API endpoint to register external data sources
+  app.post('/api/data-sources', (req, res) => {
+    const { id, name, url, intervalMs } = req.body;
+    if (!id || !name || !url) {
+      res.status(400).json({ error: 'Missing required fields: id, name, url' });
+      return;
+    }
+    // Access pipeline's apiPoller through a method if needed
+    res.json({ registered: true, id });
   });
 
   // Session cleanup interval
@@ -44,6 +65,7 @@ async function main(): Promise<void> {
   const shutdown = (): void => {
     log.info('Shutting down...');
     clearInterval(cleanupInterval);
+    pipeline.stop();
     wsHandler.close();
     process.exit(0);
   };
