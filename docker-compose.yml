@@ -1,0 +1,80 @@
+version: '3.8'
+
+services:
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - WS_PORT=3001
+      - REDIS_URL=redis://redis:6379
+      - ASR_SERVICE_URL=http://asr:8001
+      - TTS_SERVICE_URL=http://tts:8002
+      - VERIFICATION_SERVICE_URL=http://verification:8003
+      - VECTOR_STORE_URL=http://vector-store:8004
+    depends_on:
+      - redis
+    networks:
+      - jarvis-network
+
+  verification:
+    build:
+      context: ./services/verification
+      dockerfile: Dockerfile
+    ports:
+      - "8003:8003"
+    environment:
+      - ENV=development
+      - PORT=8003
+    networks:
+      - jarvis-network
+
+  vector-store:
+    build:
+      context: ./services/vector-store
+      dockerfile: Dockerfile
+    ports:
+      - "8004:8004"
+    environment:
+      - ENV=development
+      - PORT=8004
+      - DATABASE_URL=postgresql://jarvis:jarvis@postgres:5432/jarvis
+    depends_on:
+      - postgres
+    networks:
+      - jarvis-network
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - jarvis-network
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=jarvis
+      - POSTGRES_PASSWORD=jarvis
+      - POSTGRES_DB=jarvis
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - jarvis-network
+
+networks:
+  jarvis-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+  postgres-data:
