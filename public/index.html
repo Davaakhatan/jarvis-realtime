@@ -146,6 +146,72 @@
       padding: 0.5rem;
       text-align: center;
     }
+    .mode-toggle {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+      padding: 0.5rem 1rem;
+      background: #1a1a2e;
+      border-radius: 20px;
+    }
+    .toggle-switch {
+      position: relative;
+      width: 50px;
+      height: 26px;
+    }
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .toggle-slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: #333;
+      transition: 0.3s;
+      border-radius: 26px;
+    }
+    .toggle-slider:before {
+      position: absolute;
+      content: "";
+      height: 20px;
+      width: 20px;
+      left: 3px;
+      bottom: 3px;
+      background: white;
+      transition: 0.3s;
+      border-radius: 50%;
+    }
+    .toggle-switch input:checked + .toggle-slider {
+      background: #00d4ff;
+    }
+    .toggle-switch input:checked + .toggle-slider:before {
+      transform: translateX(24px);
+    }
+    .voice-button.listening-passive {
+      border-color: #666;
+      animation: pulse-passive 3s infinite;
+    }
+    @keyframes pulse-passive {
+      0%, 100% { box-shadow: 0 0 10px rgba(102, 102, 102, 0.2); }
+      50% { box-shadow: 0 0 20px rgba(102, 102, 102, 0.4); }
+    }
+    .wake-indicator {
+      font-size: 0.8rem;
+      color: #00d4ff;
+      margin-top: -1rem;
+      margin-bottom: 1rem;
+      opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .wake-indicator.visible {
+      opacity: 1;
+    }
   </style>
 </head>
 <body>
@@ -153,12 +219,21 @@
   <p class="subtitle">Real-time Voice Assistant</p>
   <p class="subtitle" style="font-size: 0.75rem; margin-top: -1rem;">Wake: "Jarvis" | Interrupt: "Stop", "Cancel", "Wait"</p>
 
+  <div class="mode-toggle">
+    <label class="toggle-switch">
+      <input type="checkbox" id="alwaysListenToggle">
+      <span class="toggle-slider"></span>
+    </label>
+    <span id="modeLabel">Push-to-talk</span>
+  </div>
+
   <div class="status">
     <div class="status-dot" id="statusDot"></div>
     <span id="statusText">Disconnected</span>
   </div>
 
   <button class="voice-button" id="voiceBtn">🎤</button>
+  <div class="wake-indicator" id="wakeIndicator">🎯 Wake word detected!</div>
   <div class="state-label" id="stateLabel">Press to speak</div>
 
   <div class="conversation" id="conversation"></div>
@@ -174,6 +249,11 @@
     let audioContext = null;
     let isRecording = false;
     let sessionId = null;
+    let alwaysListening = false;
+    let passiveStream = null;
+    let passiveContext = null;
+    let speechRecognition = null;
+    let wakeWordTimeout = null;
 
     const voiceBtn = document.getElementById('voiceBtn');
     const stateLabel = document.getElementById('stateLabel');
@@ -182,6 +262,9 @@
     const conversation = document.getElementById('conversation');
     const transcript = document.getElementById('transcript');
     const interruptBtn = document.getElementById('interruptBtn');
+    const alwaysListenToggle = document.getElementById('alwaysListenToggle');
+    const modeLabel = document.getElementById('modeLabel');
+    const wakeIndicator = document.getElementById('wakeIndicator');
 
     function connect() {
       ws = new WebSocket(WS_URL);
@@ -249,15 +332,23 @@
           break;
 
         case 'tts.end':
-          voiceBtn.className = 'voice-button';
-          stateLabel.textContent = 'Press to speak';
           interruptBtn.classList.remove('visible');
+          if (alwaysListening) {
+            startPassiveListening();
+          } else {
+            voiceBtn.className = 'voice-button';
+            stateLabel.textContent = 'Press to speak';
+          }
           break;
 
         case 'session.interrupt':
-          voiceBtn.className = 'voice-button';
-          stateLabel.textContent = 'Interrupted - Say "Jarvis" or press to speak';
           interruptBtn.classList.remove('visible');
+          if (alwaysListening) {
+            startPassiveListening();
+          } else {
+            voiceBtn.className = 'voice-button';
+            stateLabel.textContent = 'Interrupted - Press to speak';
+          }
           break;
 
         case 'session.state_change':
@@ -356,6 +447,15 @@
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'audio.end' }));
       }
+
+      // Resume passive listening after a delay if in always-listening mode
+      if (alwaysListening) {
+        setTimeout(() => {
+          if (alwaysListening && !isRecording) {
+            startPassiveListening();
+          }
+        }, 1000);
+      }
     }
 
     function playAudio(base64Audio) {
@@ -401,6 +501,157 @@
       if (e.code === 'Space' && isRecording) {
         e.preventDefault();
         stopRecording();
+      }
+    });
+
+    // Always-listening mode with wake word detection
+    function startPassiveListening() {
+      if (speechRecognition) {
+        speechRecognition.stop();
+      }
+
+      // Use Web Speech API for wake word detection (lightweight)
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        console.warn('Speech Recognition not supported');
+        stateLabel.textContent = 'Wake word not supported in this browser';
+        return;
+      }
+
+      speechRecognition = new SpeechRecognition();
+      speechRecognition.continuous = true;
+      speechRecognition.interimResults = true;
+      speechRecognition.lang = 'en-US';
+
+      speechRecognition.onresult = (event) => {
+        const last = event.results.length - 1;
+        const transcript = event.results[last][0].transcript.toLowerCase();
+
+        // Check for wake words
+        const wakeWords = ['jarvis', 'hey jarvis', 'ok jarvis', 'hey travis', 'travis'];
+        const hasWakeWord = wakeWords.some(word => transcript.includes(word));
+
+        if (hasWakeWord && !isRecording) {
+          console.log('Wake word detected:', transcript);
+          onWakeWordDetected(transcript);
+        }
+
+        // Check for interrupt words during response
+        const interruptWords = ['stop', 'cancel', 'wait', 'hold on', 'pause', 'never mind'];
+        const hasInterrupt = interruptWords.some(word => transcript.includes(word));
+
+        if (hasInterrupt && interruptBtn.classList.contains('visible')) {
+          console.log('Interrupt word detected:', transcript);
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'interrupt' }));
+          }
+        }
+      };
+
+      speechRecognition.onerror = (event) => {
+        console.error('Speech recognition error:', event.error);
+        if (event.error === 'not-allowed') {
+          stateLabel.textContent = 'Microphone access denied';
+          alwaysListenToggle.checked = false;
+          alwaysListening = false;
+          modeLabel.textContent = 'Push-to-talk';
+        }
+      };
+
+      speechRecognition.onend = () => {
+        // Restart if still in always-listening mode
+        if (alwaysListening && !isRecording) {
+          setTimeout(() => {
+            if (alwaysListening && !isRecording) {
+              speechRecognition.start();
+            }
+          }, 100);
+        }
+      };
+
+      try {
+        speechRecognition.start();
+        voiceBtn.className = 'voice-button listening-passive';
+        stateLabel.textContent = 'Listening for "Jarvis"...';
+        console.log('Passive listening started');
+      } catch (err) {
+        console.error('Failed to start speech recognition:', err);
+      }
+    }
+
+    function stopPassiveListening() {
+      if (speechRecognition) {
+        speechRecognition.stop();
+        speechRecognition = null;
+      }
+      if (!isRecording) {
+        voiceBtn.className = 'voice-button';
+        stateLabel.textContent = 'Press to speak';
+      }
+    }
+
+    function onWakeWordDetected(transcript) {
+      // Show indicator
+      wakeIndicator.classList.add('visible');
+      clearTimeout(wakeWordTimeout);
+      wakeWordTimeout = setTimeout(() => {
+        wakeIndicator.classList.remove('visible');
+      }, 2000);
+
+      // Stop passive listening temporarily
+      if (speechRecognition) {
+        speechRecognition.stop();
+      }
+
+      // Extract command after wake word (if any)
+      let command = transcript;
+      const wakeWords = ['hey jarvis', 'ok jarvis', 'jarvis', 'hey travis', 'travis'];
+      for (const word of wakeWords) {
+        const idx = command.indexOf(word);
+        if (idx !== -1) {
+          command = command.substring(idx + word.length).trim();
+          break;
+        }
+      }
+
+      // If there's a command after the wake word, send it directly
+      if (command.length > 3) {
+        console.log('Command after wake word:', command);
+        addMessage('user', command);
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'transcript', text: command, isFinal: true }));
+        }
+        voiceBtn.className = 'voice-button processing';
+        stateLabel.textContent = 'Processing...';
+
+        // Resume passive listening after a delay
+        setTimeout(() => {
+          if (alwaysListening && !isRecording) {
+            startPassiveListening();
+          }
+        }, 1000);
+      } else {
+        // No command, start active recording
+        startRecording();
+
+        // Auto-stop after silence (5 seconds)
+        setTimeout(() => {
+          if (isRecording) {
+            stopRecording();
+          }
+        }, 5000);
+      }
+    }
+
+    // Toggle handler
+    alwaysListenToggle.addEventListener('change', (e) => {
+      alwaysListening = e.target.checked;
+      modeLabel.textContent = alwaysListening ? 'Always listening' : 'Push-to-talk';
+
+      if (alwaysListening) {
+        startPassiveListening();
+      } else {
+        stopPassiveListening();
       }
     });
 
