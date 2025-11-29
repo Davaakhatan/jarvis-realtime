@@ -30,7 +30,7 @@ export class TTSService extends EventEmitter {
   constructor(config: TTSConfig) {
     super();
     this.config = {
-      model: 'tts-1-hd', // HD model for higher quality audio
+      model: 'tts-1', // Standard model for faster synthesis
       voice: 'nova', // Nova - warm female voice
       speed: 1.0,
       ...config,

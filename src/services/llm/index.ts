@@ -47,7 +47,7 @@ export class LLMService extends EventEmitter {
   constructor(config: LLMConfig) {
     super();
     this.config = {
-      model: 'gpt-4-turbo-preview',
+      model: 'gpt-4o-mini',
       maxTokens: 1024,
       temperature: 0.3, // Lower temperature for more factual, consistent responses
       ...config,
