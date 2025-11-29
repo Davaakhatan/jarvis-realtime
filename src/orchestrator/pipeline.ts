@@ -39,6 +39,7 @@ export class Pipeline extends EventEmitter {
   private processingTimers: Map<string, number> = new Map();
   private conversationHistory: Map<string, Message[]> = new Map();
   private audioBuffers: Map<string, Buffer[]> = new Map();
+  private activeResponseIds: Map<string, string> = new Map(); // Track active response per session
 
   constructor(
     sessionManager: SessionManager,
@@ -383,6 +384,10 @@ export class Pipeline extends EventEmitter {
       return;
     }
 
+    // Generate a unique response ID for this request
+    const responseId = uuidv4();
+    this.activeResponseIds.set(sessionId, responseId);
+
     // Get or create conversation history
     let history = this.conversationHistory.get(session.conversationId) || [];
 
@@ -457,14 +462,14 @@ export class Pipeline extends EventEmitter {
 
           // Synthesize this sentence immediately
           if (completeSentence) {
-            await this.streamSentenceToTTS(sessionId, completeSentence);
+            await this.streamSentenceToTTS(sessionId, responseId, completeSentence);
           }
         }
       }
 
       // Synthesize any remaining text in buffer
       if (!this.isSessionInterrupted(sessionId) && sentenceBuffer.trim()) {
-        await this.streamSentenceToTTS(sessionId, sentenceBuffer.trim());
+        await this.streamSentenceToTTS(sessionId, responseId, sentenceBuffer.trim());
       }
 
       if (!this.isSessionInterrupted(sessionId) && fullResponse) {
@@ -569,14 +574,21 @@ export class Pipeline extends EventEmitter {
     }
   }
 
-  private async streamSentenceToTTS(sessionId: string, text: string): Promise<void> {
+  private async streamSentenceToTTS(sessionId: string, responseId: string, text: string): Promise<void> {
     if (this.isSessionInterrupted(sessionId)) {
+      return;
+    }
+
+    // Check if this response is still the active one (not superseded by a new request)
+    if (this.activeResponseIds.get(sessionId) !== responseId) {
+      logger.debug({ sessionId, responseId }, 'Skipping TTS for superseded response');
       return;
     }
 
     try {
       await this.services.tts.synthesizeStream(text, (chunk) => {
-        if (this.isSessionInterrupted(sessionId)) {
+        // Check again inside callback - might have been superseded during TTS call
+        if (this.isSessionInterrupted(sessionId) || this.activeResponseIds.get(sessionId) !== responseId) {
           return;
         }
 
