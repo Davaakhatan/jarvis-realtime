@@ -414,6 +414,11 @@ export class Pipeline extends EventEmitter {
 
       // Get LLM response with streaming
       let fullResponse = '';
+      let sentenceBuffer = '';
+      let isSpeaking = false;
+
+      // Start speaking state as soon as we begin
+      this.sessionManager.updateSessionState(sessionId, 'speaking');
 
       for await (const chunk of this.services.llm.chatStream(history, { apiData: apiContext })) {
         if (this.isSessionInterrupted(sessionId)) {
@@ -422,6 +427,7 @@ export class Pipeline extends EventEmitter {
         }
 
         fullResponse += chunk;
+        sentenceBuffer += chunk;
 
         this.emit('event', {
           id: uuidv4(),
@@ -430,6 +436,35 @@ export class Pipeline extends EventEmitter {
           timestamp: new Date(),
           payload: { text: chunk },
         } as PipelineEvent);
+
+        // Check if we have a complete sentence (ends with . ! ? or newline)
+        const sentenceMatch = sentenceBuffer.match(/^(.*?[.!?\n])\s*/);
+        if (sentenceMatch) {
+          const completeSentence = sentenceMatch[1].trim();
+          sentenceBuffer = sentenceBuffer.slice(sentenceMatch[0].length);
+
+          // Start TTS immediately for the first sentence
+          if (completeSentence && !isSpeaking) {
+            isSpeaking = true;
+            this.emit('event', {
+              id: uuidv4(),
+              sessionId,
+              type: 'tts.start',
+              timestamp: new Date(),
+              payload: {},
+            } as PipelineEvent);
+          }
+
+          // Synthesize this sentence immediately
+          if (completeSentence) {
+            await this.streamSentenceToTTS(sessionId, completeSentence);
+          }
+        }
+      }
+
+      // Synthesize any remaining text in buffer
+      if (!this.isSessionInterrupted(sessionId) && sentenceBuffer.trim()) {
+        await this.streamSentenceToTTS(sessionId, sentenceBuffer.trim());
       }
 
       if (!this.isSessionInterrupted(sessionId) && fullResponse) {
@@ -504,8 +539,19 @@ export class Pipeline extends EventEmitter {
           logger.error({ error: err }, 'Failed to store assistant message in vector store');
         });
 
-        // Synthesize speech with verified response
-        await this.synthesizeResponse(sessionId, verifiedResponse);
+        // Emit TTS end event if we started speaking
+        if (isSpeaking) {
+          this.emit('event', {
+            id: uuidv4(),
+            sessionId,
+            type: 'tts.end',
+            timestamp: new Date(),
+            payload: {},
+          } as PipelineEvent);
+        }
+
+        // Return to idle state
+        this.sessionManager.updateSessionState(sessionId, 'idle');
       }
     } catch (error) {
       logger.error({ sessionId, error }, 'LLM processing failed');
@@ -520,6 +566,30 @@ export class Pipeline extends EventEmitter {
           recoverable: true,
         },
       } as PipelineEvent);
+    }
+  }
+
+  private async streamSentenceToTTS(sessionId: string, text: string): Promise<void> {
+    if (this.isSessionInterrupted(sessionId)) {
+      return;
+    }
+
+    try {
+      await this.services.tts.synthesizeStream(text, (chunk) => {
+        if (this.isSessionInterrupted(sessionId)) {
+          return;
+        }
+
+        this.emit('event', {
+          id: uuidv4(),
+          sessionId,
+          type: 'tts.chunk',
+          timestamp: new Date(),
+          payload: { audio: chunk },
+        } as PipelineEvent);
+      });
+    } catch (error) {
+      logger.error({ sessionId, error, text }, 'TTS sentence synthesis failed');
     }
   }
 
