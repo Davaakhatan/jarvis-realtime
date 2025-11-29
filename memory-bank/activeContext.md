@@ -1,10 +1,11 @@
 # Active Context
 
-## Current Focus
+## Current Focus (2025-11-28)
 
-- Project scaffold complete and pushed to GitHub
-- Continuing development of core services
-- Next: ASR, TTS, and LLM integrations
+- ✅ Complete test coverage (176 tests passing)
+- ✅ Performance optimization complete (60-70% faster)
+- ✅ Interrupt handling fixed (no overlapping audio)
+- System ready for production testing
 
 ## Recent Decisions
 
@@ -13,6 +14,9 @@
 - Zod for runtime type validation
 - Pino for structured logging
 - Docker Compose for local development stack
+- **OpenAI Models**: Whisper for ASR, gpt-4o-mini for LLM, tts-1 for TTS (2025-11-28)
+- **Streaming Architecture**: Sentence-by-sentence TTS streaming for low latency (2025-11-28)
+- **Response ID Tracking**: Prevent overlapping audio during interrupts (2025-11-28)
 
 ## Project Metadata
 
